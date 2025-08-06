@@ -1,51 +1,30 @@
 import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "./firebase";
 
 export default function GoalDetail() {
-  const { goalId } = useParams();
-  const [goal, setGoal] = useState(null);
-  const [routine, setRoutine] = useState(null);
-  const [exercisePlan, setExercisePlan] = useState(null);
-  const [mealPlan, setMealPlan] = useState(null);
+  const { goalId } = useParams(); // This is actually the userId now
+  const [user, setUser] = useState(null);
+  const [userGoals, setUserGoals] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchGoalData = async () => {
       try {
-        // Fetch goal
-        const goalDoc = await getDoc(doc(db, "goals", goalId));
-        if (goalDoc.exists()) {
-          const goalData = { id: goalDoc.id, ...goalDoc.data() };
-          setGoal(goalData);
+        // Fetch user data
+        const userDoc = await getDoc(doc(db, "users", goalId));
+        if (userDoc.exists()) {
+          const userData = { id: userDoc.id, ...userDoc.data() };
+          setUser(userData);
 
-          // Fetch routine if goal has one
-          if (goalData.routineId) {
-            const routineDoc = await getDoc(doc(db, "routines", goalData.routineId));
-            if (routineDoc.exists()) {
-              const routineData = { id: routineDoc.id, ...routineDoc.data() };
-              setRoutine(routineData);
-
-              // Fetch exercise plan
-              if (routineData.exercisePlanId) {
-                const exercisePlanDoc = await getDoc(doc(db, "exercisePlans", routineData.exercisePlanId));
-                if (exercisePlanDoc.exists()) {
-                  setExercisePlan({ id: exercisePlanDoc.id, ...exercisePlanDoc.data() });
-                }
-              }
-
-              // Fetch meal plan
-              if (routineData.mealPlanId) {
-                const mealPlanDoc = await getDoc(doc(db, "mealPlans", routineData.mealPlanId));
-                if (mealPlanDoc.exists()) {
-                  setMealPlan({ id: mealPlanDoc.id, ...mealPlanDoc.data() });
-                }
-              }
-            }
-          }
+          // Fetch any goals associated with this user from the goals collection
+          const goalsQuery = query(collection(db, "goals"), where("userId", "==", goalId));
+          const goalsSnapshot = await getDocs(goalsQuery);
+          const goalsData = goalsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          setUserGoals(goalsData);
         } else {
-          console.log("No such goal!");
+          console.log("No such user!");
         }
         setLoading(false);
       } catch (error) {
@@ -53,7 +32,6 @@ export default function GoalDetail() {
         setLoading(false);
       }
     };
-
     fetchGoalData();
   }, [goalId]);
 
@@ -61,8 +39,8 @@ export default function GoalDetail() {
     return <div>Loading goal details...</div>;
   }
 
-  if (!goal) {
-    return <div>Goal not found</div>;
+  if (!user) {
+    return <div>User not found</div>;
   }
 
   return (
@@ -80,7 +58,7 @@ export default function GoalDetail() {
         </Link>
       </div>
 
-      <h1>Goal Details</h1>
+      <h1>Goal Details for {user.name}</h1>
       
       <div style={{ 
         backgroundColor: '#f8f9fa', 
@@ -88,193 +66,204 @@ export default function GoalDetail() {
         borderRadius: '8px',
         marginBottom: '20px'
       }}>
-        <h2>Goal Information</h2>
+        <h2>User Information</h2>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <tbody>
             <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold', width: '200px' }}>Goal ID:</td>
-              <td style={{ padding: '8px' }}>{goal.goalId}</td>
+              <td style={{ padding: '8px', fontWeight: 'bold', width: '200px' }}>Name:</td>
+              <td style={{ padding: '8px' }}>{user.name || 'N/A'}</td>
             </tr>
             <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold' }}>User ID:</td>
-              <td style={{ padding: '8px' }}>{goal.userId}</td>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Email:</td>
+              <td style={{ padding: '8px' }}>{user.email || 'N/A'}</td>
             </tr>
             <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold' }}>Type:</td>
-              <td style={{ padding: '8px' }}>{goal.type || 'N/A'}</td>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Age:</td>
+              <td style={{ padding: '8px' }}>{user.age || 'N/A'}</td>
             </tr>
             <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold' }}>Description:</td>
-              <td style={{ padding: '8px' }}>{goal.description || 'N/A'}</td>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Height:</td>
+              <td style={{ padding: '8px' }}>{user.height} {user.heightUnit || 'cm'}</td>
             </tr>
             <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold' }}>Target Value:</td>
-              <td style={{ padding: '8px' }}>
-                {goal.targetValue ? `${goal.targetValue} ${goal.targetUnit || ''}` : 'N/A'}
-              </td>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Weight:</td>
+              <td style={{ padding: '8px' }}>{user.weight} {user.weightUnit || 'kg'}</td>
             </tr>
             <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold' }}>Duration (Weeks):</td>
-              <td style={{ padding: '8px' }}>{goal.durationWeeks || 'N/A'}</td>
-            </tr>
-            <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold' }}>Target Per Week:</td>
-              <td style={{ padding: '8px' }}>{goal.targetPerWeek || 'N/A'}</td>
-            </tr>
-            <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold' }}>Progress:</td>
-              <td style={{ padding: '8px' }}>{goal.progress || 0}%</td>
-            </tr>
-            <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold' }}>Status:</td>
-              <td style={{ padding: '8px' }}>
-                <span style={{ 
-                  color: goal.isActive ? 'green' : 'red',
-                  fontWeight: 'bold'
-                }}>
-                  {goal.isActive ? 'Active' : 'Inactive'}
-                </span>
-              </td>
-            </tr>
-            <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold' }}>Start Date:</td>
-              <td style={{ padding: '8px' }}>
-                {goal.startDate ? new Date(goal.startDate.seconds * 1000).toLocaleDateString() : 'N/A'}
-              </td>
-            </tr>
-            <tr>
-              <td style={{ padding: '8px', fontWeight: 'bold' }}>End Date:</td>
-              <td style={{ padding: '8px' }}>
-                {goal.endDate ? new Date(goal.endDate.seconds * 1000).toLocaleDateString() : 'N/A'}
-              </td>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Target Weight:</td>
+              <td style={{ padding: '8px' }}>{user.targetWeight} {user.targetWeightUnit || 'kg'}</td>
             </tr>
           </tbody>
         </table>
       </div>
 
-      {routine && (
+      <div style={{ 
+        backgroundColor: '#f8f9fa', 
+        padding: '20px', 
+        borderRadius: '8px',
+        marginBottom: '20px'
+      }}>
+        <h2>Fitness Goal</h2>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <tbody>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold', width: '200px' }}>Selected Goal:</td>
+              <td style={{ padding: '8px' }}>
+                <span style={{ 
+                  backgroundColor: '#17a2b8',
+                  color: 'white',
+                  padding: '4px 12px',
+                  borderRadius: '12px',
+                  fontSize: '14px',
+                  fontWeight: 'bold'
+                }}>
+                  {user.fitnessGoal || 'Not set'}
+                </span>
+              </td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Experience Level:</td>
+              <td style={{ padding: '8px' }}>{user.experienceLevel || 'N/A'}</td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Workout Duration:</td>
+              <td style={{ padding: '8px' }}>{user.workoutDuration || 'N/A'} minutes</td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Training Window:</td>
+              <td style={{ padding: '8px' }}>{user.trainingWindowStart || 'N/A'} - {user.trainingWindowEnd || 'N/A'}</td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Fixed Schedule Days:</td>
+              <td style={{ padding: '8px' }}>
+                {user.fixedScheduleDays && user.fixedScheduleDays.length > 0 ? (
+                  user.fixedScheduleDays.join(', ')
+                ) : (
+                  'N/A'
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Smart Schedule Workouts Per Week:</td>
+              <td style={{ padding: '8px' }}>{user.smartScheduleWorkoutsPerWeek || 'N/A'}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {userGoals.length > 0 ? (
         <div style={{ 
           backgroundColor: '#f8f9fa', 
           padding: '20px', 
           borderRadius: '8px',
           marginBottom: '20px'
         }}>
-          <h2>Routine Information</h2>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <tbody>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold', width: '200px' }}>Routine ID:</td>
-                <td style={{ padding: '8px' }}>{routine.documentId}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Name:</td>
-                <td style={{ padding: '8px' }}>{routine.name || 'N/A'}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Description:</td>
-                <td style={{ padding: '8px' }}>{routine.description || 'N/A'}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Exercise Plan ID:</td>
-                <td style={{ padding: '8px' }}>{routine.exercisePlanId || 'N/A'}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Meal Plan ID:</td>
-                <td style={{ padding: '8px' }}>{routine.mealPlanId || 'N/A'}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Current Day:</td>
-                <td style={{ padding: '8px' }}>{routine.currentDay || 'N/A'}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Status:</td>
-                <td style={{ padding: '8px' }}>
-                  <span style={{ 
-                    color: routine.isActive ? 'green' : 'red',
-                    fontWeight: 'bold'
-                  }}>
-                    {routine.isActive ? 'Active' : 'Inactive'}
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <h2>Assigned Plans ({userGoals.length})</h2>
+          {userGoals.map((goal, index) => (
+            <div key={goal.id} style={{ marginBottom: '20px', border: '1px solid #ddd', borderRadius: '8px', padding: '15px' }}>
+              <h3>Plan {index + 1}</h3>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <tbody>
+                  <tr>
+                    <td style={{ padding: '8px', fontWeight: 'bold', width: '200px' }}>Goal ID:</td>
+                    <td style={{ padding: '8px' }}>{goal.id}</td>
+                  </tr>
+                  <tr>
+                    <td style={{ padding: '8px', fontWeight: 'bold' }}>Type:</td>
+                    <td style={{ padding: '8px' }}>{goal.type || 'N/A'}</td>
+                  </tr>
+                  <tr>
+                    <td style={{ padding: '8px', fontWeight: 'bold' }}>Status:</td>
+                    <td style={{ padding: '8px' }}>
+                      <span style={{ 
+                        color: goal.isActive ? '#28a745' : '#dc3545',
+                        fontWeight: 'bold'
+                      }}>
+                        {goal.isActive ? 'Active' : 'Inactive'}
+                      </span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={{ padding: '8px', fontWeight: 'bold' }}>Routine ID:</td>
+                    <td style={{ padding: '8px' }}>{goal.routineId || 'No routine assigned'}</td>
+                  </tr>
+                  <tr>
+                    <td style={{ padding: '8px', fontWeight: 'bold' }}>Created:</td>
+                    <td style={{ padding: '8px' }}>
+                      {goal.createdAt ? new Date(goal.createdAt.seconds * 1000).toLocaleDateString() : 'N/A'}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ))}
         </div>
-      )}
-
-      {exercisePlan && (
-        <div style={{ 
-          backgroundColor: '#f8f9fa', 
-          padding: '20px', 
-          borderRadius: '8px',
-          marginBottom: '20px'
-        }}>
-          <h2>Exercise Plan Information</h2>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <tbody>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold', width: '200px' }}>Exercise Plan ID:</td>
-                <td style={{ padding: '8px' }}>{exercisePlan.documentId}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Description:</td>
-                <td style={{ padding: '8px' }}>{exercisePlan.description || 'N/A'}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Created By:</td>
-                <td style={{ padding: '8px' }}>{exercisePlan.createdBy || 'N/A'}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Number of Exercises:</td>
-                <td style={{ padding: '8px' }}>{exercisePlan.exercises ? exercisePlan.exercises.length : 0}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {mealPlan && (
-        <div style={{ 
-          backgroundColor: '#f8f9fa', 
-          padding: '20px', 
-          borderRadius: '8px',
-          marginBottom: '20px'
-        }}>
-          <h2>Meal Plan Information</h2>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <tbody>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold', width: '200px' }}>Meal Plan ID:</td>
-                <td style={{ padding: '8px' }}>{mealPlan.documentId}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Description:</td>
-                <td style={{ padding: '8px' }}>{mealPlan.description || 'N/A'}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Created By:</td>
-                <td style={{ padding: '8px' }}>{mealPlan.createdBy || 'N/A'}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px', fontWeight: 'bold' }}>Number of Meals:</td>
-                <td style={{ padding: '8px' }}>{mealPlan.meals ? mealPlan.meals.length : 0}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {!routine && (
+      ) : (
         <div style={{ 
           backgroundColor: '#fff3cd', 
           padding: '20px', 
           borderRadius: '8px',
+          marginBottom: '20px',
           border: '1px solid #ffeaa7'
         }}>
-          <h3>No Routine Assigned</h3>
-          <p>This goal does not have an associated routine yet.</p>
+          <h2>No Plans Assigned</h2>
+          <p>This user has not been assigned any exercise or meal plans yet.</p>
+          <p>Click "Create/Modify Plan" in the admin dashboard to assign plans based on their fitness goal.</p>
         </div>
       )}
+
+      <div style={{ 
+        backgroundColor: '#f8f9fa', 
+        padding: '20px', 
+        borderRadius: '8px',
+        marginBottom: '20px'
+      }}>
+        <h2>Nutrition Information</h2>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <tbody>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold', width: '200px' }}>Food Preference:</td>
+              <td style={{ padding: '8px' }}>{user.foodPreference || 'N/A'}</td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Dietary Restrictions:</td>
+              <td style={{ padding: '8px' }}>
+                {user.dietaryRestrictions && user.dietaryRestrictions.length > 0 ? (
+                  user.dietaryRestrictions.join(', ')
+                ) : (
+                  'None'
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Allergies:</td>
+              <td style={{ padding: '8px' }}>
+                {user.allergies && user.allergies.length > 0 ? (
+                  user.allergies.join(', ')
+                ) : (
+                  'None'
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Calorie Goal:</td>
+              <td style={{ padding: '8px' }}>{user.calorieGoal || 'N/A'} calories</td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Protein Goal:</td>
+              <td style={{ padding: '8px' }}>{user.proteinGoal || 'N/A'}g</td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Carb Goal:</td>
+              <td style={{ padding: '8px' }}>{user.carbGoal || 'N/A'}g</td>
+            </tr>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 'bold' }}>Fat Goal:</td>
+              <td style={{ padding: '8px' }}>{user.fatGoal || 'N/A'}g</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 } 

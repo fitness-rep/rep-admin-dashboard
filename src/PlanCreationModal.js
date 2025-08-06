@@ -1,0 +1,5326 @@
+import React, { useState, useEffect } from "react";
+import { collection, getDocs, addDoc } from "firebase/firestore";
+import { db } from "./firebase";
+import { exercisePlanTemplates, mealPlanTemplates, getAllTemplates } from './templateData';
+
+export default function PlanCreationModal({ user, onClose, onPlanCreated }) {
+  const [currentStep, setCurrentStep] = useState(1);
+  const [stepCompletion, setStepCompletion] = useState({
+    step1: false,
+    step2: false,
+    step3: false,
+    step4: false
+  });
+  
+  // Preview modal states
+  const [showExercisePreview, setShowExercisePreview] = useState(false);
+  const [showMealPreview, setShowMealPreview] = useState(false);
+  const [selectedWorkoutDays, setSelectedWorkoutDays] = useState([]);
+  const [exercises, setExercises] = useState([]);
+  const [foods, setFoods] = useState([]);
+  const [meals, setMeals] = useState([]); // For meal builder integration
+  const [loading, setLoading] = useState(true);
+  
+  // Exercise search and selection states (per day)
+  const [daySearchTerms, setDaySearchTerms] = useState({});
+  const [daySelectedCategories, setDaySelectedCategories] = useState({});
+  const [dayShowDropdowns, setDayShowDropdowns] = useState({});
+  
+  // Progressive planning states
+  const [progressiveWeeks, setProgressiveWeeks] = useState(4);
+  const [enableAllProgression, setEnableAllProgression] = useState(true);
+  const [expandedProgression, setExpandedProgression] = useState({}); // Track which exercises have expanded progression settings
+  
+  // Meal planning states
+  const [mealsPerDay, setMealsPerDay] = useState(3);
+  const [mealSearchTerms, setMealSearchTerms] = useState({});
+  const [mealShowDropdowns, setMealShowDropdowns] = useState({});
+  const [editingDayName, setEditingDayName] = useState(null);
+  const [customMealTypes, setCustomMealTypes] = useState([]);
+  const [currentMealDay, setCurrentMealDay] = useState(0); // 0-6 for Sunday-Saturday
+  const [expandedMeals, setExpandedMeals] = useState({}); // Track which meals are expanded
+  const [dayCategoryFilters, setDayCategoryFilters] = useState({}); // Track category filters for each day
+  const [mealInstanceSearchTerms, setMealInstanceSearchTerms] = useState({}); // Track search terms for meal instances
+  const [mealInstanceShowDropdowns, setMealInstanceShowDropdowns] = useState({}); // Track dropdown visibility for meal instances
+  const [editingMealNames, setEditingMealNames] = useState({}); // Track which meal names are being edited
+  
+  // Template selection states
+  const [availableTemplates, setAvailableTemplates] = useState({ exercise: [], meal: [] });
+  const [selectedExerciseTemplate, setSelectedExerciseTemplate] = useState(null);
+  const [selectedMealTemplate, setSelectedMealTemplate] = useState(null);
+  const [showTemplateSelection, setShowTemplateSelection] = useState(false);
+  const [templateSelectionType, setTemplateSelectionType] = useState(null); // 'exercise' or 'meal'
+  const [selectedTemplateDays, setSelectedTemplateDays] = useState(3);
+  const [exerciseTemplates, setExerciseTemplates] = useState(exercisePlanTemplates);
+  const [mealTemplates, setMealTemplates] = useState(mealPlanTemplates);
+  
+  // Custom template creation states
+  const [showCustomExerciseCreation, setShowCustomExerciseCreation] = useState(false);
+  const [showCustomMealCreation, setShowCustomMealCreation] = useState(false);
+  const [customExercisePlan, setCustomExercisePlan] = useState({ days: [] });
+  const [customMealPlan, setCustomMealPlan] = useState({ days: [] });
+  
+  // Day selection state
+  const [selectedExerciseDays, setSelectedExerciseDays] = useState(null);
+  
+  // Smart duration calculation states
+  const [realisticDuration, setRealisticDuration] = useState(null);
+  const [selectedDuration, setSelectedDuration] = useState(null);
+  const [durationOptions, setDurationOptions] = useState([]);
+  
+  const [planData, setPlanData] = useState({
+    goalType: user?.fitnessGoal || '',
+    duration: 8,
+    exercisePlan: {
+      days: [],
+      frequency: user?.smartScheduleWorkoutsPerWeek || 3
+    },
+    mealPlan: {
+      days: [],
+      mealsPerDay: 3,
+      mealOptions: {} // Will store the 5 options per meal type
+    },
+    progressiveSettings: {
+      enabled: true,
+      weeks: 4,
+      progressionType: 'automatic', // 'automatic' or 'manual'
+      weeklyIncrements: {
+        sets: 0,
+        reps: 1,
+        duration: 5, // seconds
+        rest: -5 // seconds (decrease rest time)
+      },
+      mealProgression: {
+        enabled: true,
+        calorieIncrement: 0, // calories per week
+        proteinIncrement: 0, // grams per week
+        carbIncrement: 0, // grams per week
+        fatIncrement: 0 // grams per week
+      }
+    }
+  });
+
+  // Exercise categories for filtering
+  const exerciseCategories = [
+    { value: 'all', label: 'All Categories' },
+    { value: 'strength', label: 'Strength Training' },
+    { value: 'cardio', label: 'Cardio' },
+    { value: 'flexibility', label: 'Flexibility' },
+    { value: 'bodyweight', label: 'Bodyweight' },
+    { value: 'powerlifting', label: 'Powerlifting' }
+  ];
+
+  // Predefined meal types
+  const predefinedMealTypes = [
+    { value: 'breakfast', label: 'Breakfast' },
+    { value: 'pre_workout', label: 'Pre-Workout' },
+    { value: 'post_workout', label: 'Post-Workout' },
+    { value: 'lunch', label: 'Lunch' },
+    { value: 'snack', label: 'Snack' },
+    { value: 'dinner', label: 'Dinner' },
+    { value: 'before_bed', label: 'Before Bed' }
+  ];
+
+  // Default meal options for each meal type
+  const defaultMealOptions = {
+    breakfast: [
+      { id: 1, name: "Option 1", foods: [], description: "Breakfast option 1" },
+      { id: 2, name: "Option 2", foods: [], description: "Breakfast option 2" },
+      { id: 3, name: "Option 3", foods: [], description: "Breakfast option 3" },
+      { id: 4, name: "Option 4", foods: [], description: "Breakfast option 4" },
+      { id: 5, name: "Create Your Own", foods: [], description: "Customize your breakfast", isCustom: true }
+    ],
+    lunch: [
+      { id: 1, name: "Option 1", foods: [], description: "Lunch option 1" },
+      { id: 2, name: "Option 2", foods: [], description: "Lunch option 2" },
+      { id: 3, name: "Option 3", foods: [], description: "Lunch option 3" },
+      { id: 4, name: "Option 4", foods: [], description: "Lunch option 4" },
+      { id: 5, name: "Create Your Own", foods: [], description: "Customize your lunch", isCustom: true }
+    ],
+    dinner: [
+      { id: 1, name: "Option 1", foods: [], description: "Dinner option 1" },
+      { id: 2, name: "Option 2", foods: [], description: "Dinner option 2" },
+      { id: 3, name: "Option 3", foods: [], description: "Dinner option 3" },
+      { id: 4, name: "Option 4", foods: [], description: "Dinner option 4" },
+      { id: 5, name: "Create Your Own", foods: [], description: "Customize your dinner", isCustom: true }
+    ]
+  };
+
+  // Get recommended exercise days based on user frequency
+  const getRecommendedExerciseDays = () => {
+    const userFrequency = user?.smartScheduleWorkoutsPerWeek || 3;
+    return Math.min(userFrequency, 6); // Cap at 6 days
+  };
+
+  // Get all meal types (predefined + custom)
+  const getAllMealTypes = () => {
+    return [...predefinedMealTypes, ...customMealTypes];
+  };
+
+  // Get meal suggestions based on user goal
+  const getMealSuggestions = (mealType) => {
+    const suggestions = {
+      breakfast: {
+        'Fat Loss / Weight Reduction': { calories: '300-400', protein: '20-25g', carbs: '30-40g', fats: '10-15g' },
+        'Muscle Gain / Strength Building': { calories: '500-600', protein: '30-35g', carbs: '60-70g', fats: '15-20g' },
+        'Body Recomposition (Lose fat & build muscle)': { calories: '400-500', protein: '25-30g', carbs: '45-55g', fats: '12-18g' },
+        'General Health & Wellness': { calories: '350-450', protein: '20-25g', carbs: '40-50g', fats: '12-18g' }
+      },
+      lunch: {
+        'Fat Loss / Weight Reduction': { calories: '400-500', protein: '25-30g', carbs: '35-45g', fats: '12-18g' },
+        'Muscle Gain / Strength Building': { calories: '600-700', protein: '35-40g', carbs: '70-80g', fats: '20-25g' },
+        'Body Recomposition (Lose fat & build muscle)': { calories: '500-600', protein: '30-35g', carbs: '55-65g', fats: '15-22g' },
+        'General Health & Wellness': { calories: '450-550', protein: '25-30g', carbs: '50-60g', fats: '15-20g' }
+      },
+      dinner: {
+        'Fat Loss / Weight Reduction': { calories: '350-450', protein: '25-30g', carbs: '25-35g', fats: '10-15g' },
+        'Muscle Gain / Strength Building': { calories: '500-600', protein: '30-35g', carbs: '50-60g', fats: '15-20g' },
+        'Body Recomposition (Lose fat & build muscle)': { calories: '400-500', protein: '25-30g', carbs: '40-50g', fats: '12-18g' },
+        'General Health & Wellness': { calories: '400-500', protein: '25-30g', carbs: '45-55g', fats: '12-18g' }
+      }
+    };
+    
+    return suggestions[mealType]?.[user?.fitnessGoal] || suggestions[mealType]?.['General Health & Wellness'] || { calories: '400-500', protein: '25-30g', carbs: '45-55g', fats: '15-20g' };
+  };
+
+  useEffect(() => {
+    fetchData();
+    
+    // Initialize selected workout days if user has fixed schedule
+    if (user?.fixedScheduleDays && user.fixedScheduleDays.length > 0) {
+      setSelectedWorkoutDays(user.fixedScheduleDays);
+    }
+    
+    // Initialize selected exercise days based on user's workout frequency
+    if (user?.smartScheduleWorkoutsPerWeek) {
+      console.log('Setting selectedExerciseDays to user frequency:', user.smartScheduleWorkoutsPerWeek);
+      setSelectedExerciseDays(user.smartScheduleWorkoutsPerWeek);
+    }
+    
+    // Calculate realistic duration when user data is available
+    if (user) {
+      const calculatedDuration = calculateRealisticDuration(user);
+      setRealisticDuration(calculatedDuration);
+      
+      if (calculatedDuration) {
+        const options = getDurationOptions(calculatedDuration);
+        setDurationOptions(options);
+        
+        // Set default to recommended duration
+        const recommendedOption = options.find(opt => opt.recommended);
+        if (recommendedOption) {
+          setSelectedDuration(recommendedOption.value);
+          setPlanData(prev => ({
+            ...prev,
+            duration: recommendedOption.value
+          }));
+        }
+      }
+    }
+  }, [user]);
+
+  const fetchData = async () => {
+    try {
+      // Fetch exercises
+      const exercisesSnapshot = await getDocs(collection(db, "exerciseTemplate"));
+      const exercisesData = exercisesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setExercises(exercisesData);
+
+      // Fetch foods
+      const foodsSnapshot = await getDocs(collection(db, "foods"));
+      const foodsData = foodsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      console.log('=== FOODS DATA LOADED ===');
+      console.log('Total foods loaded:', foodsData.length);
+      console.log('Sample foods:', foodsData.slice(0, 3).map(f => ({ 
+        id: f.id, 
+        foodId: f.foodId, 
+        name: f.name, 
+        calories: f.calories,
+        protein: f.protein,
+        carbs: f.carbs,
+        fats: f.fats
+      })));
+      setFoods(foodsData);
+
+      // Fetch meals (for meal builder integration)
+      const mealsSnapshot = await getDocs(collection(db, "meals"));
+      const mealsData = mealsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setMeals(mealsData);
+      
+      console.log('Fetched meals:', mealsData);
+
+      // Load templates
+      await loadTemplates();
+
+      setLoading(false);
+    } catch (error) {
+      console.error("Error fetching data:", error);
+      setLoading(false);
+    }
+  };
+
+  // Filter exercises for search (per day)
+  const getFilteredExercises = (dayIndex) => {
+    const searchTerm = daySearchTerms[dayIndex] || '';
+    const selectedCategory = daySelectedCategories[dayIndex] || 'all';
+    
+    return exercises.filter(exercise => {
+      const matchesSearch = exercise.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           exercise.type.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesCategory = selectedCategory === 'all' || exercise.type === selectedCategory;
+      return matchesSearch && matchesCategory;
+    });
+  };
+
+  // Filter foods for meal search
+  const getFilteredFoods = (mealIndex) => {
+    const searchTerm = mealSearchTerms[mealIndex] || '';
+    
+    return foods.filter(food => {
+      return food.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+             food.category.toLowerCase().includes(searchTerm.toLowerCase());
+    });
+  };
+
+  // Filter meals for meal builder integration
+  const getFilteredMeals = (mealIndex) => {
+    const searchTerm = mealSearchTerms[mealIndex] || '';
+    
+    return meals.filter(meal => {
+      return meal.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+             meal.description.toLowerCase().includes(searchTerm.toLowerCase());
+    });
+  };
+
+  // Load templates function
+  const loadTemplates = async () => {
+    try {
+      // Load system templates
+      const allTemplates = getAllTemplates();
+      
+      // Load custom templates from Firebase
+      const exerciseSnapshot = await getDocs(collection(db, "exercisePlanTemplates"));
+      const mealSnapshot = await getDocs(collection(db, "mealPlanTemplates"));
+      
+      const customExerciseTemplates = exerciseSnapshot.docs.map(doc => ({
+        id: doc.id,
+        firebaseId: doc.id,
+        ...doc.data(),
+        category: 'custom'
+      }));
+      
+      const customMealTemplates = mealSnapshot.docs.map(doc => ({
+        id: doc.id,
+        firebaseId: doc.id,
+        ...doc.data(),
+        category: 'custom'
+      }));
+
+      setAvailableTemplates({
+        exercise: [...Object.values(exercisePlanTemplates), ...customExerciseTemplates],
+        meal: [...Object.values(mealPlanTemplates), ...customMealTemplates]
+      });
+    } catch (error) {
+      console.error('Error loading templates:', error);
+    }
+  };
+
+  const applyExerciseTemplate = (template) => {
+    // Handle new template structure with dayOptions
+    if (template.dayOptions) {
+      // Use selected days from dropdown
+      const days = template.dayOptions[selectedTemplateDays] || template.dayOptions[3];
+      
+      setPlanData(prev => ({
+        ...prev,
+        exercisePlan: {
+          ...prev.exercisePlan,
+          days: days.map(day => ({
+            ...day,
+            exercises: day.exercises.map(exercise => ({
+              ...exercise,
+              progressionEnabled: true,
+              progressionSettings: getExerciseProgressionDefaults(exercise.type, planData.goalType)
+            }))
+          }))
+        }
+      }));
+    } else if (template.days) {
+      // Handle old template structure
+      setPlanData(prev => ({
+        ...prev,
+        exercisePlan: {
+          ...prev.exercisePlan,
+          days: template.days.map(day => ({
+            ...day,
+            exercises: day.exercises.map(exercise => ({
+              ...exercise,
+              progressionEnabled: true,
+              progressionSettings: getExerciseProgressionDefaults(exercise.type, planData.goalType)
+            }))
+          }))
+        }
+      }));
+    }
+    
+    setSelectedExerciseTemplate(template);
+    setShowTemplateSelection(false);
+  };
+
+  const applyMealTemplate = (template) => {
+    if (!template.mealOptions) return;
+    
+    setPlanData(prev => ({
+      ...prev,
+      mealPlan: {
+        ...prev.mealPlan,
+        mealOptions: template.mealOptions
+      }
+    }));
+    
+    setSelectedMealTemplate(template);
+    setShowTemplateSelection(false);
+  };
+
+  // Combined search for foods and meals
+  const getFilteredFoodsAndMeals = (mealIndex) => {
+    const searchTerm = mealSearchTerms[mealIndex] || '';
+    
+    console.log('Searching for:', searchTerm);
+    console.log('Available foods:', foods.length);
+    console.log('Available meals:', meals.length);
+    console.log('Sample foods:', foods.slice(0, 3));
+    console.log('Sample meals:', meals.slice(0, 3));
+    
+    const filteredFoods = foods.filter(food => {
+      return food.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+             food.category.toLowerCase().includes(searchTerm.toLowerCase());
+    }).map(food => ({ ...food, type: 'food' }));
+    
+    const filteredMeals = meals.filter(meal => {
+      return meal.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+             meal.description.toLowerCase().includes(searchTerm.toLowerCase());
+    }).map(meal => ({ ...meal, type: 'meal' }));
+    
+    console.log('Search results:', {
+      searchTerm,
+      foodsCount: foods.length,
+      mealsCount: meals.length,
+      filteredFoods: filteredFoods.length,
+      filteredMeals: filteredMeals.length,
+      allResults: [...filteredFoods, ...filteredMeals]
+    });
+    
+    return [...filteredFoods, ...filteredMeals];
+  };
+
+  // Calculate user's maintenance calories and macros
+  const calculateUserNutrition = () => {
+    if (!user) return null;
+    
+    // BMR calculation using Mifflin-St Jeor formula
+    let bmr;
+    if (user.gender === 'Male') {
+      bmr = 10 * user.weight + 6.25 * user.height - 5 * user.age + 5;
+    } else {
+      bmr = 10 * user.weight + 6.25 * user.height - 5 * user.age - 161;
+    }
+    
+    // Activity multipliers based on activity level
+    const activityMultipliers = {
+      'Sedentary (little or no exercise)': 1.2,
+      'Lightly active (light exercise/sports 1-3 days/week)': 1.375,
+      'Moderately active (moderate exercise/sports 3-5 days/week)': 1.55,
+      'Very active (hard exercise/sports 6-7 days a week)': 1.725,
+      'Extremely active (very hard exercise, physical job)': 1.9
+    };
+    
+    const activityMultiplier = activityMultipliers[user.activityLevel] || 1.375;
+    const tdee = bmr * activityMultiplier;
+    
+    // Calculate target calories based on goal
+    let targetCalories;
+    let calorieAdjustment;
+    
+    switch (user.fitnessGoal) {
+      case 'Fat Loss / Weight Reduction':
+        calorieAdjustment = -400; // 400 calorie deficit
+        targetCalories = tdee + calorieAdjustment;
+        break;
+      case 'Muscle Gain / Strength Building':
+        calorieAdjustment = 300; // 300 calorie surplus
+        targetCalories = tdee + calorieAdjustment;
+        break;
+      case 'Body Recomposition (Lose fat & build muscle)':
+        calorieAdjustment = -100; // Slight deficit
+        targetCalories = tdee + calorieAdjustment;
+        break;
+      case 'General Health & Wellness':
+        calorieAdjustment = 0; // Maintenance
+        targetCalories = tdee;
+        break;
+      default:
+        calorieAdjustment = 0;
+        targetCalories = tdee;
+    }
+    
+    // Calculate macro distribution
+    let proteinRatio, fatRatio, carbRatio;
+    
+    switch (user.fitnessGoal) {
+      case 'Fat Loss / Weight Reduction':
+        proteinRatio = 0.35; // 35% protein for satiety
+        fatRatio = 0.30; // 30% fat
+        carbRatio = 0.35; // 35% carbs
+        break;
+      case 'Muscle Gain / Strength Building':
+        proteinRatio = 0.30; // 30% protein
+        fatRatio = 0.25; // 25% fat
+        carbRatio = 0.45; // 45% carbs for energy
+        break;
+      case 'Body Recomposition (Lose fat & build muscle)':
+        proteinRatio = 0.35; // 35% protein
+        fatRatio = 0.25; // 25% fat
+        carbRatio = 0.40; // 40% carbs
+        break;
+      case 'General Health & Wellness':
+        proteinRatio = 0.25; // 25% protein
+        fatRatio = 0.30; // 30% fat
+        carbRatio = 0.45; // 45% carbs
+        break;
+      default:
+        proteinRatio = 0.25;
+        fatRatio = 0.30;
+        carbRatio = 0.45;
+    }
+    
+    // Calculate macro targets in grams
+    const proteinGrams = (targetCalories * proteinRatio) / 4; // 4 calories per gram
+    const fatGrams = (targetCalories * fatRatio) / 9; // 9 calories per gram
+    const carbGrams = (targetCalories * carbRatio) / 4; // 4 calories per gram
+    
+    return {
+      bmr: Math.round(bmr),
+      tdee: Math.round(tdee),
+      targetCalories: Math.round(targetCalories),
+      calorieAdjustment,
+      proteinGrams: Math.round(proteinGrams),
+      fatGrams: Math.round(fatGrams),
+      carbGrams: Math.round(carbGrams),
+      proteinRatio,
+      fatRatio,
+      carbRatio
+    };
+  };
+
+  // Calculate meal distribution and food quantities
+  const calculateMealPlan = () => {
+    const nutrition = calculateUserNutrition();
+    if (!nutrition) return null;
+    
+    // Meal distribution based on number of meals per day
+    const mealDistributions = {
+      1: [1.0], // 100% in one meal
+      2: [0.4, 0.6], // 40% breakfast, 60% dinner
+      3: [0.3, 0.35, 0.35], // 30% breakfast, 35% lunch, 35% dinner
+      4: [0.25, 0.3, 0.3, 0.15], // 25% breakfast, 30% lunch, 30% dinner, 15% snack
+      5: [0.2, 0.25, 0.25, 0.2, 0.1], // 20% breakfast, 25% lunch, 25% dinner, 20% snack, 10% snack
+      6: [0.15, 0.2, 0.25, 0.25, 0.1, 0.05] // 15% breakfast, 20% lunch, 25% dinner, 25% snack, 10% snack, 5% snack
+    };
+    
+    const distribution = mealDistributions[mealsPerDay] || mealDistributions[3];
+    
+    // Calculate calories and macros for each meal
+    const mealTargets = distribution.map((ratio, index) => ({
+      mealNumber: index + 1,
+      calorieTarget: Math.round(nutrition.targetCalories * ratio),
+      proteinTarget: Math.round(nutrition.proteinGrams * ratio),
+      carbTarget: Math.round(nutrition.carbGrams * ratio),
+      fatTarget: Math.round(nutrition.fatGrams * ratio),
+      ratio: ratio
+    }));
+    
+    return {
+      nutrition,
+      mealTargets,
+      distribution
+    };
+  };
+
+  // Calculate exact food quantities for a meal
+  const calculateFoodQuantities = (mealFoods, mealTargets) => {
+    if (!mealFoods || mealFoods.length === 0) return [];
+    
+    // Check if any foods have original quantities (from meals)
+    const hasOriginalQuantities = mealFoods.some(food => food.originalQuantity);
+    
+    if (hasOriginalQuantities) {
+      // Use original quantities from meal builder
+      return mealFoods.map(food => {
+        const quantity = food.originalQuantity || food.quantity || 100;
+        const multiplier = quantity / 100;
+        
+        // The comprehensive food database stores per-100g values directly
+        return {
+          ...food,
+          quantity: quantity,
+          calculatedCalories: Math.round((food.calories || 0) * multiplier),
+          calculatedProtein: Math.round((food.protein || 0) * multiplier * 10) / 10,
+          calculatedCarbs: Math.round((food.carbs || 0) * multiplier * 10) / 10,
+          calculatedFat: Math.round((food.fat || 0) * multiplier * 10) / 10
+        };
+      });
+    }
+    
+    // Calculate total nutritional content of selected foods per 100g
+    const totalNutrition = mealFoods.reduce((acc, food) => {
+      // The comprehensive food database stores per-100g values directly
+      return {
+        calories: acc.calories + (food.calories || 0),
+        protein: acc.protein + (food.protein || 0),
+        carbs: acc.carbs + (food.carbs || 0),
+        fat: acc.fat + (food.fat || 0)
+      };
+    }, { calories: 0, protein: 0, carbs: 0, fat: 0 });
+    
+    // Calculate the multiplier needed to reach meal targets
+    // We'll prioritize protein first, then balance calories
+    const proteinMultiplier = mealTargets.proteinTarget / totalNutrition.protein;
+    const calorieMultiplier = mealTargets.calorieTarget / totalNutrition.calories;
+    
+    // Use the more conservative multiplier to avoid exceeding targets
+    const multiplier = Math.min(proteinMultiplier, calorieMultiplier); // No safety cap
+    
+    // Calculate quantities for each food
+    const foodQuantities = mealFoods.map(food => {
+      // The comprehensive food database stores per-100g values directly
+      return {
+        ...food,
+        quantity: Math.round((multiplier * 100) * 10) / 10, // Round to 1 decimal place
+        calculatedCalories: Math.round((food.calories || 0) * multiplier),
+        calculatedProtein: Math.round((food.protein || 0) * multiplier * 10) / 10,
+        calculatedCarbs: Math.round((food.carbs || 0) * multiplier * 10) / 10,
+        calculatedFat: Math.round((food.fat || 0) * multiplier * 10) / 10
+      };
+    });
+    
+    return foodQuantities;
+  };
+
+  // Calculate current meal nutrition and provide suggestions
+  const calculateMealNutrition = (mealFoods, mealTargets) => {
+    if (!mealFoods || mealFoods.length === 0) {
+      return {
+        current: { calories: 0, protein: 0, carbs: 0, fat: 0 },
+        target: mealTargets,
+        suggestions: ['Add foods to meet your meal targets']
+      };
+    }
+    
+    // Calculate current nutrition
+    const currentNutrition = mealFoods.reduce((acc, item) => {
+      if (item.itemType === 'meal') {
+        // For meals, use the pre-calculated totals
+        return {
+          calories: acc.calories + (item.calculatedCalories || 0),
+          protein: acc.protein + (item.calculatedProtein || 0),
+          carbs: acc.carbs + (item.calculatedCarbs || 0),
+          fat: acc.fat + (item.calculatedFat || 0)
+        };
+      } else {
+        // For individual foods, use the calculated values
+        return {
+          calories: acc.calories + (item.calculatedCalories || 0),
+          protein: acc.protein + (item.calculatedProtein || 0),
+          carbs: acc.carbs + (item.calculatedCarbs || 0),
+          fat: acc.fat + (item.calculatedFat || 0)
+        };
+      }
+    }, { calories: 0, protein: 0, carbs: 0, fat: 0 });
+    
+    // Calculate differences
+    const calorieDiff = mealTargets.calorieTarget - currentNutrition.calories;
+    const proteinDiff = mealTargets.proteinTarget - currentNutrition.protein;
+    const carbDiff = mealTargets.carbTarget - currentNutrition.carbs;
+    const fatDiff = mealTargets.fatTarget - currentNutrition.fat;
+    
+    // Generate suggestions
+    const suggestions = [];
+    
+    if (Math.abs(calorieDiff) > 50) {
+      if (calorieDiff > 0) {
+        suggestions.push(`Add ${Math.round(calorieDiff)} calories`);
+      } else {
+        suggestions.push(`Reduce ${Math.round(Math.abs(calorieDiff))} calories`);
+      }
+    }
+    
+    if (Math.abs(proteinDiff) > 5) {
+      if (proteinDiff > 0) {
+        suggestions.push(`Add ${Math.round(proteinDiff)}g protein (try chicken, fish, eggs, or protein powder)`);
+      } else {
+        suggestions.push(`Reduce ${Math.round(Math.abs(proteinDiff))}g protein`);
+      }
+    }
+    
+    if (Math.abs(carbDiff) > 10) {
+      if (carbDiff > 0) {
+        suggestions.push(`Add ${Math.round(carbDiff)}g carbs (try rice, pasta, bread, or fruits)`);
+      } else {
+        suggestions.push(`Reduce ${Math.round(Math.abs(carbDiff))}g carbs`);
+      }
+    }
+    
+    if (Math.abs(fatDiff) > 5) {
+      if (fatDiff > 0) {
+        suggestions.push(`Add ${Math.round(fatDiff)}g fats (try nuts, avocado, olive oil, or cheese)`);
+      } else {
+        suggestions.push(`Reduce ${Math.round(Math.abs(fatDiff))}g fats`);
+      }
+    }
+    
+    if (suggestions.length === 0) {
+      suggestions.push('Perfect! This meal meets your targets');
+    }
+    
+    return {
+      current: currentNutrition,
+      target: mealTargets,
+      suggestions
+    };
+  };
+
+  // Calculate realistic duration based on user data
+  const calculateRealisticDuration = (user) => {
+    if (!user) return null;
+    
+    const currentWeight = user.weight || 70;
+    const targetWeight = user.targetWeight || currentWeight;
+    const weightDifference = Math.abs(currentWeight - targetWeight);
+    const goal = user.fitnessGoal || 'General Health & Wellness';
+    const age = user.age || 25;
+    const gender = user.gender || 'Male';
+    
+    // Use actual user fitness data instead of generic activity level
+    const strengthExperience = user.strengthExperience || 'Beginner';
+    const experienceLevel = user.experienceLevel || 'Beginner';
+    const workoutFrequency = user.smartScheduleWorkoutsPerWeek || 3;
+    const workoutDuration = user.workoutDuration || 45;
+    const activityLevel = user.activityLevel || 'Moderately active (moderate exercise/sports 3-5 days/week)';
+    
+    // Normalize strength experience to match expected values
+    const normalizeStrengthExperience = (exp) => {
+      if (!exp) return 'Beginner';
+      const normalized = exp.toLowerCase();
+      if (normalized.includes('more than 4 years') || normalized.includes('4+ years') || normalized.includes('expert')) {
+        return 'Expert';
+      } else if (normalized.includes('2-4 years') || normalized.includes('advanced')) {
+        return 'Advanced';
+      } else if (normalized.includes('1-2 years') || normalized.includes('intermediate')) {
+        return 'Intermediate';
+      } else {
+        return 'Beginner';
+      }
+    };
+    
+    const normalizedStrengthExperience = normalizeStrengthExperience(strengthExperience);
+    
+    console.log('=== DEBUG: Smart Duration Calculation ===');
+    console.log('User goal:', goal);
+    console.log('Current weight:', currentWeight);
+    console.log('Target weight:', targetWeight);
+    console.log('Weight difference:', weightDifference);
+    console.log('Experience level:', experienceLevel);
+    console.log('Strength experience (original):', strengthExperience);
+    console.log('Strength experience (normalized):', normalizedStrengthExperience);
+    console.log('Workout frequency:', workoutFrequency);
+    console.log('Workout duration:', workoutDuration);
+    console.log('========================================');
+    
+    // Calculate a more accurate activity multiplier based on user's actual fitness data
+    const getActivityMultiplier = () => {
+      let multiplier = 1.0;
+      
+      // Base multiplier from experience level
+      const experienceMultipliers = {
+        'Beginner': 0.8,
+        'Intermediate': 1.0,
+        'Advanced': 1.1,
+        'Expert': 1.15
+      };
+      multiplier *= experienceMultipliers[experienceLevel] || 1.0;
+      
+      // Adjust based on strength experience
+      const strengthMultipliers = {
+        'Beginner': 0.8,
+        'Intermediate': 1.0,
+        'Advanced': 1.05,
+        'Expert': 1.1
+      };
+      multiplier *= strengthMultipliers[normalizedStrengthExperience] || 1.0;
+      
+      // Adjust based on workout frequency
+      if (workoutFrequency >= 5) multiplier *= 1.08;
+      else if (workoutFrequency >= 4) multiplier *= 1.05;
+      else if (workoutFrequency >= 3) multiplier *= 1.0;
+      else if (workoutFrequency >= 2) multiplier *= 0.95;
+      else multiplier *= 0.9;
+      
+      // Adjust based on workout duration
+      if (workoutDuration >= 60) multiplier *= 1.05;
+      else if (workoutDuration >= 45) multiplier *= 1.0;
+      else if (workoutDuration >= 30) multiplier *= 0.95;
+      else multiplier *= 0.9;
+      
+      return Math.max(0.7, Math.min(1.3, multiplier)); // Cap between 0.7-1.3
+    };
+    
+    const activityMultiplier = getActivityMultiplier();
+    
+    console.log('Activity multiplier:', activityMultiplier);
+    
+
+    
+    // Base weekly rates adjusted for age, gender, and fitness experience
+    const getBaseWeeklyRate = (goal, age, gender) => {
+      let baseRate = 0;
+      
+      console.log('Processing goal:', goal);
+      
+            // Normalize goal string for better matching
+      const normalizedGoal = goal.toLowerCase().trim();
+      console.log('Normalized goal:', normalizedGoal);
+      console.log('Goal matching check:');
+      console.log('- Contains "body recomposition":', normalizedGoal.includes('body recomposition'));
+      console.log('- Contains "lose fat":', normalizedGoal.includes('lose fat'));
+      console.log('- Contains "build muscle":', normalizedGoal.includes('build muscle'));
+      
+      if (normalizedGoal.includes('fat loss') || normalizedGoal.includes('weight reduction') || normalizedGoal.includes('weight loss')) {
+        console.log('Processing Fat Loss case');
+        if (currentWeight > targetWeight) {
+          // Base fat loss rate - HYBRID APPROACH
+          baseRate = 0.8; // kg per week (increased from 0.75 for more realistic durations)
+          
+          // Age adjustments (metabolism slows with age)
+          if (age < 25) baseRate *= 1.1; // 10% faster for young adults
+          else if (age > 50) baseRate *= 0.8; // 20% slower for older adults
+          else if (age > 35) baseRate *= 0.9; // 10% slower for middle-aged
+          
+          // Gender adjustments (men typically lose weight faster)
+          if (gender === 'Male') baseRate *= 1.1;
+          else baseRate *= 0.9;
+          
+          // Use the calculated activity multiplier based on user's actual fitness data
+          baseRate *= activityMultiplier;
+          
+          return Math.max(0.4, Math.min(1.2, baseRate)); // Cap between 0.4-1.2 kg/week (HYBRID APPROACH)
+        }
+      } else if (normalizedGoal.includes('muscle gain') || normalizedGoal.includes('strength building') || normalizedGoal.includes('muscle building')) {
+        console.log('Processing Muscle Gain case');
+        if (currentWeight < targetWeight) {
+          // Base muscle gain rate - HYBRID APPROACH
+          baseRate = 0.5; // kg per week (increased from 0.3 for more realistic durations)
+          
+          // Age adjustments (muscle building slows with age)
+          if (age < 25) baseRate *= 1.1; // 10% faster for young adults
+          else if (age > 50) baseRate *= 0.7; // 30% slower for older adults
+          else if (age > 35) baseRate *= 0.9; // 10% slower for middle-aged
+          
+          // Gender adjustments (men typically gain muscle faster)
+          if (gender === 'Male') baseRate *= 1.1;
+          else baseRate *= 0.9;
+          
+          // Use the calculated activity multiplier based on user's actual fitness data
+          baseRate *= activityMultiplier;
+          
+          return Math.max(0.3, Math.min(0.8, baseRate)); // Cap between 0.3-0.8 kg/week (HYBRID APPROACH)
+        }
+      } else if (normalizedGoal.includes('body recomposition') || (normalizedGoal.includes('lose fat') && normalizedGoal.includes('build muscle'))) {
+        console.log('Processing Body Recomposition case');
+        // Body recomposition can involve weight gain, loss, or maintenance
+        // Calculate based on the overall weight change goal
+        
+        // Base rate for body recomposition - HYBRID APPROACH
+        baseRate = 0.6; // net change per week (increased from 0.4 for more realistic durations)
+        
+        // Age adjustments
+        if (age < 25) baseRate *= 1.1;
+        else if (age > 50) baseRate *= 0.7;
+        else if (age > 35) baseRate *= 0.85;
+        
+        // Gender adjustments
+        if (gender === 'Male') baseRate *= 1.05;
+        else baseRate *= 0.95;
+        
+        // Use the calculated activity multiplier based on user's actual fitness data
+        baseRate *= activityMultiplier;
+        
+        return Math.max(0.4, Math.min(1.0, baseRate)); // Cap between 0.4-1.0 kg/week (HYBRID APPROACH)
+      } else if (normalizedGoal.includes('general health') || normalizedGoal.includes('wellness') || normalizedGoal.includes('maintenance')) {
+        console.log('Processing General Health & Wellness case');
+        // No specific weight target, use standard duration
+        return {
+          duration: 12,
+          weeklyRate: 0,
+          type: 'wellness',
+          explanation: 'Standard 12-week wellness program',
+          factors: {
+            age: age,
+            gender: gender,
+            experienceLevel: experienceLevel,
+            strengthExperience: normalizedStrengthExperience,
+            workoutFrequency: workoutFrequency,
+            workoutDuration: workoutDuration,
+            activityLevel: activityLevel,
+            activityMultiplier: activityMultiplier,
+            goal: goal,
+            currentWeight: currentWeight,
+            targetWeight: targetWeight,
+            weightDifference: weightDifference
+          }
+        };
+      } else {
+        console.log('No matching goal case, using default');
+        // Default case for any unmatched goals
+        return 0;
+      }
+      
+      return baseRate;
+    };
+    
+    const weeklyRate = getBaseWeeklyRate(goal, age, gender);
+    
+    console.log('Weekly rate calculated:', weeklyRate);
+    console.log('Weight difference:', weightDifference);
+    
+    if (typeof weeklyRate === 'object') {
+      console.log('Returning wellness object');
+      return weeklyRate; // Already returned wellness object
+    }
+    
+    if (weeklyRate === 0 || weightDifference === 0) {
+      console.log('No weight change target, returning default');
+      console.log('Weekly rate:', weeklyRate);
+      console.log('Weight difference:', weightDifference);
+      console.log('Current weight:', currentWeight);
+      console.log('Target weight:', targetWeight);
+      return {
+        duration: 12,
+        weeklyRate: 0,
+        type: 'default',
+        explanation: 'Standard 12-week program (no weight change target)',
+        factors: {
+          age: age,
+          gender: gender,
+          experienceLevel: experienceLevel,
+          strengthExperience: normalizedStrengthExperience,
+          workoutFrequency: workoutFrequency,
+          workoutDuration: workoutDuration,
+          activityLevel: activityLevel,
+          activityMultiplier: activityMultiplier,
+          goal: goal,
+          currentWeight: currentWeight,
+          targetWeight: targetWeight,
+          weightDifference: weightDifference
+        }
+      };
+    }
+    
+    // Calculate duration
+    let duration = Math.ceil(weightDifference / weeklyRate);
+    
+    // Apply reasonable limits based on goal type - HYBRID APPROACH
+    let minDuration, maxDuration;
+    switch(goal) {
+      case 'Fat Loss / Weight Reduction':
+        minDuration = 8;
+        maxDuration = 24; // Reduced from 32 for more realistic durations
+        break;
+      case 'Muscle Gain / Strength Building':
+        minDuration = 8;  // Reduced from 12 for more realistic durations
+        maxDuration = 24; // Reduced from 40 for more realistic durations
+        break;
+      case 'Body Recomposition (Lose fat & build muscle)':
+        minDuration = 12; // Reduced from 16 for more realistic durations
+        maxDuration = 32; // Reduced from 48 for more realistic durations
+        break;
+      default:
+        minDuration = 8;
+        maxDuration = 20; // Reduced from 24 for more realistic durations
+    }
+    
+    // Apply limits
+    if (duration < minDuration) duration = minDuration;
+    if (duration > maxDuration) duration = maxDuration;
+    
+    // Determine if duration is realistic
+    const isRealistic = duration >= minDuration && duration <= maxDuration;
+    const warnings = [];
+    
+    if (duration < minDuration) {
+      warnings.push(`Duration too short for ${goal.toLowerCase()}. Minimum recommended: ${minDuration} weeks.`);
+    }
+    if (duration > maxDuration) {
+      warnings.push(`Duration too long for ${goal.toLowerCase()}. Consider breaking into phases.`);
+    }
+    if (weeklyRate > 1.0 && goal === 'Fat Loss / Weight Reduction') {
+      warnings.push('Weight loss rate is aggressive. Consider a more gradual approach for sustainability.');
+    }
+    if (weeklyRate > 0.7 && goal === 'Muscle Gain / Strength Building') {
+      warnings.push('Muscle gain rate is aggressive. Ensure proper nutrition and recovery.');
+    }
+    
+    return {
+      duration,
+      weeklyRate: Math.round(weeklyRate * 100) / 100,
+      type: goal.toLowerCase().replace(/\s+/g, '_'),
+      explanation: `${goal}: ${weightDifference}kg at ${Math.round(weeklyRate * 100) / 100}kg/week = ${duration} weeks`,
+      factors: {
+        age: age,
+        gender: gender,
+        experienceLevel: experienceLevel,
+        strengthExperience: normalizedStrengthExperience,
+        workoutFrequency: workoutFrequency,
+        workoutDuration: workoutDuration,
+        activityLevel: activityLevel,
+        activityMultiplier: activityMultiplier,
+        goal: goal,
+        currentWeight: currentWeight,
+        targetWeight: targetWeight,
+        weightDifference: weightDifference
+      },
+      isRealistic,
+      warnings,
+      minDuration,
+      maxDuration
+    };
+  };
+
+  // Get duration options for admin selection
+  const getDurationOptions = (realisticDuration) => {
+    if (!realisticDuration) return [];
+    
+    const { duration, type, weeklyRate, isRealistic, warnings, factors } = realisticDuration;
+    const weightDifference = factors.weightDifference;
+    
+    // Calculate conservative and aggressive options
+    // Conservative = longer duration = slower weekly rate
+    // Aggressive = shorter duration = faster weekly rate
+    const conservativeDuration = Math.min(realisticDuration.maxDuration || 32, Math.ceil(duration * 1.375));
+    const aggressiveDuration = Math.max(realisticDuration.minDuration || 8, Math.floor(duration * 0.75));
+    
+    // Calculate weekly rates for each option
+    console.log('Duration options calculation:');
+    console.log('- Realistic duration object:', realisticDuration);
+    console.log('- Weight difference:', weightDifference);
+    console.log('- Conservative duration:', conservativeDuration);
+    console.log('- Aggressive duration:', aggressiveDuration);
+    
+    const conservativeWeeklyRate = Math.round((weightDifference / conservativeDuration) * 100) / 100;
+    const aggressiveWeeklyRate = Math.round((weightDifference / aggressiveDuration) * 100) / 100;
+    
+    console.log('- Conservative weekly rate:', conservativeWeeklyRate);
+    console.log('- Aggressive weekly rate:', aggressiveWeeklyRate);
+    
+    return [
+      {
+        value: conservativeDuration,
+        label: `${conservativeDuration} weeks (Conservative)`,
+        description: `Slower, more sustainable progress at ${conservativeWeeklyRate}kg/week`,
+        type: 'conservative'
+      },
+      {
+        value: duration,
+        label: `${duration} weeks (Recommended)`,
+        description: realisticDuration.explanation,
+        type: 'recommended',
+        recommended: true,
+        isRealistic
+      },
+      {
+        value: aggressiveDuration,
+        label: `${aggressiveDuration} weeks (Aggressive)`,
+        description: `Faster progress at ${aggressiveWeeklyRate}kg/week, requires more dedication`,
+        type: 'aggressive'
+      }
+    ];
+  };
+
+  const getGoalTemplate = (goalType) => {
+    const templates = {
+      'Fat Loss / Weight Reduction': {
+        name: 'Weight Loss Plan',
+        exerciseFocus: ['cardio', 'strength'],
+        mealFocus: 'calorie_deficit',
+        duration: Math.ceil((user.weight - user.targetWeight) * 2), // 2 weeks per kg
+        description: 'Focus on cardio and strength training with calorie deficit nutrition',
+        progressionSettings: {
+          sets: 0,
+          reps: 1,
+          duration: 5,
+          rest: -5
+        },
+        mealProgression: {
+          calorieIncrement: -100, // Reduce calories weekly
+          proteinIncrement: 5, // Increase protein
+          carbIncrement: -10, // Reduce carbs
+          fatIncrement: -2 // Reduce fats slightly
+        }
+      },
+      'Muscle Gain / Strength Building': {
+        name: 'Muscle Gain Plan',
+        exerciseFocus: ['strength', 'powerlifting'],
+        mealFocus: 'high_protein',
+        duration: 12,
+        description: 'Progressive strength training with high protein nutrition',
+        progressionSettings: {
+          sets: 1,
+          reps: 2,
+          duration: 0,
+          rest: -10
+        },
+        mealProgression: {
+          calorieIncrement: 150, // Increase calories weekly
+          proteinIncrement: 10, // Increase protein significantly
+          carbIncrement: 15, // Increase carbs
+          fatIncrement: 3 // Increase fats moderately
+        }
+      },
+      'Body Recomposition (Lose fat & build muscle)': {
+        name: 'Body Recomposition Plan',
+        exerciseFocus: ['strength', 'cardio'],
+        mealFocus: 'balanced',
+        duration: 16,
+        description: 'Balanced strength and cardio with moderate nutrition',
+        progressionSettings: {
+          sets: 0,
+          reps: 1,
+          duration: 3,
+          rest: -5
+        },
+        mealProgression: {
+          calorieIncrement: 0, // Maintain calories
+          proteinIncrement: 8, // Increase protein
+          carbIncrement: 5, // Moderate carb increase
+          fatIncrement: 1 // Slight fat increase
+        }
+      },
+      'General Health & Wellness': {
+        name: 'Health & Wellness Plan',
+        exerciseFocus: ['cardio', 'flexibility'],
+        mealFocus: 'balanced',
+        duration: 8,
+        description: 'General fitness with balanced nutrition',
+        progressionSettings: {
+          sets: 0,
+          reps: 1,
+          duration: 5,
+          rest: -3
+        },
+        mealProgression: {
+          calorieIncrement: 50, // Slight calorie increase
+          proteinIncrement: 3, // Moderate protein increase
+          carbIncrement: 5, // Moderate carb increase
+          fatIncrement: 1 // Slight fat increase
+        }
+      }
+    };
+    return templates[goalType] || templates['General Health & Wellness'];
+  };
+
+  const initializePlan = () => {
+    const template = getGoalTemplate(planData.goalType);
+    const frequency = user?.smartScheduleWorkoutsPerWeek || 3;
+    
+    // Use selected duration instead of template duration
+    const planDuration = selectedDuration || planData.duration;
+    
+    // Update plan data with the selected duration
+    setPlanData(prev => ({
+      ...prev,
+      duration: planDuration,
+      progressiveSettings: {
+        ...prev.progressiveSettings,
+        weeks: planDuration,
+        weeklyIncrements: template.progressionSettings,
+        mealProgression: template.mealProgression
+      }
+    }));
+    
+    // Update progressive weeks state to match selected duration
+    setProgressiveWeeks(planDuration);
+    
+    // Debug: Log user schedule data
+    console.log('User schedule data:', {
+      scheduleType: user?.scheduleType,
+      smartScheduleWorkoutsPerWeek: user?.smartScheduleWorkoutsPerWeek,
+      smartScheduleDays: user?.smartScheduleDays,
+      fixedScheduleDays: user?.fixedScheduleDays,
+      frequency: frequency,
+      hasSmartSchedule: user?.smartScheduleWorkoutsPerWeek && user.smartScheduleWorkoutsPerWeek > 0,
+      hasFixedSchedule: user?.fixedScheduleDays && user.fixedScheduleDays.length > 0
+    });
+    
+    // Get user's actual selected days
+    let userDays = [];
+    
+    // Determine schedule type based on available data
+    const hasSmartSchedule = user?.smartScheduleWorkoutsPerWeek && user.smartScheduleWorkoutsPerWeek > 0;
+    const hasFixedSchedule = user?.fixedScheduleDays && user.fixedScheduleDays.length > 0;
+    
+    if (hasSmartSchedule) {
+      // User has smart schedule (workouts per week)
+      if (user?.smartScheduleDays && user.smartScheduleDays.length > 0) {
+        // They have specific days selected for smart schedule
+        userDays = user.smartScheduleDays;
+      } else {
+        // Use the days selected in the day selection step
+        userDays = selectedWorkoutDays.length > 0 ? selectedWorkoutDays : [];
+      }
+    } else if (hasFixedSchedule) {
+      // User has fixed schedule (specific days)
+      userDays = user.fixedScheduleDays;
+    } else {
+      // Fallback: no schedule data, use default
+      userDays = ['Monday', 'Wednesday', 'Friday'];
+    }
+    
+    // If user selected more days than they have in their array, 
+    // we need to handle this properly
+    const availableDays = userDays.length;
+    const actualFrequency = Math.min(frequency, availableDays);
+    
+    // Initialize exercise plan days with user's actual days
+    const exerciseDays = [];
+    for (let i = 0; i < actualFrequency; i++) {
+      exerciseDays.push({
+        dayNumber: i + 1,
+        dayName: userDays[i],
+        exercises: [],
+        focus: template.exerciseFocus[i % template.exerciseFocus.length]
+      });
+    }
+
+    // Debug: Log the exercise days being created
+    console.log('Exercise days created:', exerciseDays);
+    console.log('User selected frequency:', frequency, 'Available days:', availableDays, 'Actual frequency used:', actualFrequency);
+
+    // Initialize meal plan days (1 day - same for all 7 days of the week)
+    const mealDays = [];
+    const dayMeals = [];
+    for (let j = 0; j < mealsPerDay; j++) {
+      const mealType = getAllMealTypes()[j]?.value || `meal_${j + 1}`;
+      dayMeals.push({
+        mealNumber: j + 1,
+        mealType: mealType,
+        mealName: getAllMealTypes()[j]?.label || `Meal ${j + 1}`,
+        selectedOption: 1, // Default to first option
+        foods: [],
+        meals: [] // For meal builder integration
+      });
+    }
+    
+      mealDays.push({
+      dayNumber: 1,
+      dayName: 'Daily Meal Plan',
+      meals: dayMeals
+    });
+
+    // Initialize meal options
+    const mealOptions = {};
+    getAllMealTypes().forEach(mealType => {
+      if (defaultMealOptions[mealType.value]) {
+        mealOptions[mealType.value] = defaultMealOptions[mealType.value];
+      } else {
+        mealOptions[mealType.value] = [
+          { id: 1, name: `${mealType.label} Option 1`, foods: [], description: "First option" },
+          { id: 2, name: `${mealType.label} Option 2`, foods: [], description: "Second option" },
+          { id: 3, name: `${mealType.label} Option 3`, foods: [], description: "Third option" },
+          { id: 4, name: `${mealType.label} Option 4`, foods: [], description: "Fourth option" },
+          { id: 5, name: "Create Your Own", foods: [], description: `Customize your ${mealType.label.toLowerCase()}`, isCustom: true }
+        ];
+      }
+    });
+
+    setPlanData(prev => ({
+      ...prev,
+      duration: template.duration,
+      exercisePlan: { ...prev.exercisePlan, days: exerciseDays },
+      mealPlan: {
+        ...prev.mealPlan,
+        days: mealDays, 
+        mealsPerDay,
+        mealOptions
+      },
+      progressiveSettings: {
+        ...prev.progressiveSettings,
+        weeklyIncrements: template.progressionSettings,
+        mealProgression: {
+          ...prev.progressiveSettings.mealProgression,
+          ...template.mealProgression
+        }
+      }
+    }));
+  };
+
+  // Get exercise-specific progression defaults
+  const getExerciseProgressionDefaults = (exerciseType, fitnessGoal) => {
+    const defaults = {
+      strength: {
+        setsIncrement: 1,
+        repsIncrement: 2,
+        durationIncrement: 0,
+        restIncrement: -5
+      },
+      powerlifting: {
+        setsIncrement: 1,
+        repsIncrement: 1,
+        durationIncrement: 0,
+        restIncrement: -10
+      },
+      cardio: {
+        setsIncrement: 0,
+        repsIncrement: 0,
+        durationIncrement: 30,
+        restIncrement: -5
+      },
+      flexibility: {
+        setsIncrement: 0,
+        repsIncrement: 0,
+        durationIncrement: 5,
+        restIncrement: -2
+      },
+      bodyweight: {
+        setsIncrement: 1,
+        repsIncrement: 3,
+        durationIncrement: 10,
+        restIncrement: -5
+      }
+    };
+    
+    // Adjust based on fitness goal
+    if (fitnessGoal === 'Fat Loss / Weight Reduction') {
+      defaults.strength.repsIncrement = 3; // More reps for fat loss
+      defaults.cardio.durationIncrement = 45; // More cardio duration
+    } else if (fitnessGoal === 'Muscle Gain / Strength Building') {
+      defaults.strength.setsIncrement = 1;
+      defaults.strength.repsIncrement = 1; // Focus on strength
+      defaults.powerlifting.setsIncrement = 1;
+      defaults.powerlifting.repsIncrement = 1;
+    }
+    
+    return defaults[exerciseType] || defaults.strength;
+  };
+
+  // Add exercise with attributes to a specific day
+  const addExerciseToDay = (dayIndex, exercise = null) => {
+    // If no exercise provided, create a default exercise
+    if (!exercise) {
+      const defaultExercise = {
+        id: `custom_${Date.now()}`,
+        name: 'New Exercise',
+        type: 'strength'
+      };
+      exercise = defaultExercise;
+    }
+
+    // Check if exercise already exists in this day
+    const existingExerciseIndex = planData.exercisePlan.days[dayIndex].exercises.findIndex(
+      ex => ex.id === exercise.id
+    );
+
+    if (existingExerciseIndex !== -1) {
+      // Exercise already exists - ask user if they want to overwrite
+      const shouldOverwrite = window.confirm(
+        `"${exercise.name}" is already added to this day. Do you want to overwrite the existing exercise?`
+      );
+      
+      if (shouldOverwrite) {
+        // Remove the existing exercise
+        removeExerciseFromDay(dayIndex, existingExerciseIndex);
+      } else {
+        // User cancelled - don't add the exercise
+        return;
+      }
+    }
+
+    const defaultAttributes = getDefaultExerciseAttributes(exercise, user?.fitnessGoal);
+    const progressionDefaults = getExerciseProgressionDefaults(exercise.type, user?.fitnessGoal);
+    
+    const exerciseWithAttributes = {
+      id: exercise.id,
+      name: exercise.name,
+      type: exercise.type,
+      sets: defaultAttributes.sets,
+      reps: defaultAttributes.reps,
+      duration: defaultAttributes.duration,
+      rest: defaultAttributes.rest,
+      progressionEnabled: enableAllProgression, // Use bulk setting
+      progressionSettings: {
+        setsIncrement: progressionDefaults.setsIncrement,
+        repsIncrement: progressionDefaults.repsIncrement,
+        durationIncrement: progressionDefaults.durationIncrement,
+        restIncrement: progressionDefaults.restIncrement
+      },
+      notes: ''
+    };
+
+    const updatedDays = [...planData.exercisePlan.days];
+    updatedDays[dayIndex].exercises.push(exerciseWithAttributes);
+    
+    setPlanData(prev => ({
+      ...prev,
+      exercisePlan: { ...prev.exercisePlan, days: updatedDays }
+    }));
+
+    // Clear search for this day
+    setDaySearchTerms(prev => ({ ...prev, [dayIndex]: '' }));
+    setDayShowDropdowns(prev => ({ ...prev, [dayIndex]: false }));
+  };
+
+  // Get default exercise attributes based on exercise type and user goal
+  const getDefaultExerciseAttributes = (exercise, fitnessGoal) => {
+    const isStrength = exercise.type === 'strength' || exercise.type === 'powerlifting';
+    const isCardio = exercise.type === 'cardio';
+    const isFlexibility = exercise.type === 'flexibility';
+    
+    if (isStrength) {
+      return {
+        sets: 3,
+        reps: fitnessGoal === 'Muscle Gain / Strength Building' ? 8 : 12,
+        duration: 0, // Not applicable for strength
+        rest: fitnessGoal === 'Muscle Gain / Strength Building' ? 120 : 90
+      };
+    } else if (isCardio) {
+      return {
+        sets: 1,
+        reps: 0, // Not applicable for cardio
+        duration: fitnessGoal === 'Fat Loss / Weight Reduction' ? 300 : 240, // 5 or 4 minutes
+        rest: 60
+      };
+    } else if (isFlexibility) {
+      return {
+        sets: 1,
+        reps: 0,
+        duration: 30,
+        rest: 15
+      };
+    } else {
+      return {
+        sets: 2,
+        reps: 10,
+        duration: 0,
+        rest: 60
+      };
+    }
+  };
+
+  // Update exercise attributes
+  const updateExerciseAttributes = (dayIndex, exerciseIndex, field, value) => {
+    const updatedDays = [...planData.exercisePlan.days];
+    updatedDays[dayIndex].exercises[exerciseIndex][field] = value;
+    
+    setPlanData(prev => ({
+      ...prev,
+      exercisePlan: { ...prev.exercisePlan, days: updatedDays }
+    }));
+  };
+
+  // Toggle exercise progression
+  const toggleExerciseProgression = (dayIndex, exerciseIndex) => {
+    const updatedDays = [...planData.exercisePlan.days];
+    updatedDays[dayIndex].exercises[exerciseIndex].progressionEnabled = 
+      !updatedDays[dayIndex].exercises[exerciseIndex].progressionEnabled;
+    
+    setPlanData(prev => ({
+      ...prev,
+      exercisePlan: { ...prev.exercisePlan, days: updatedDays }
+    }));
+  };
+
+  // Update exercise-specific progression settings
+  const updateExerciseProgression = (dayIndex, exerciseIndex, field, value) => {
+    const updatedDays = [...planData.exercisePlan.days];
+    updatedDays[dayIndex].exercises[exerciseIndex].progressionSettings[field] = value;
+    
+    setPlanData(prev => ({
+      ...prev,
+      exercisePlan: { ...prev.exercisePlan, days: updatedDays }
+    }));
+  };
+
+  // Toggle all exercise progression
+  const toggleAllExerciseProgression = () => {
+    const newValue = !enableAllProgression;
+    setEnableAllProgression(newValue);
+    
+    const updatedDays = planData.exercisePlan.days.map(day => ({
+      ...day,
+      exercises: day.exercises.map(exercise => ({
+        ...exercise,
+        progressionEnabled: newValue
+      }))
+    }));
+    
+    setPlanData(prev => ({
+      ...prev,
+      exercisePlan: { ...prev.exercisePlan, days: updatedDays }
+    }));
+  };
+
+  // Remove exercise from day
+  const removeExerciseFromDay = (dayIndex, exerciseIndex) => {
+    const updatedDays = [...planData.exercisePlan.days];
+    updatedDays[dayIndex].exercises.splice(exerciseIndex, 1);
+    
+    setPlanData(prev => ({
+      ...prev,
+      exercisePlan: { ...prev.exercisePlan, days: updatedDays }
+    }));
+  };
+
+  // Add new day to exercise plan
+  const addDay = () => {
+    const newDayNumber = planData.exercisePlan.days.length + 1;
+    const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const newDayName = dayNames[newDayNumber - 1] || `Day ${newDayNumber}`;
+    
+    setPlanData(prev => ({
+      ...prev,
+      exercisePlan: {
+        ...prev.exercisePlan,
+        days: [...prev.exercisePlan.days, {
+          day: newDayNumber,
+          dayName: newDayName,
+          focus: 'General Fitness',
+          exercises: []
+        }]
+      }
+    }));
+  };
+
+  // Remove day from exercise plan
+  const removeDay = (dayIndex) => {
+    setPlanData(prev => ({
+      ...prev,
+      exercisePlan: {
+        ...prev.exercisePlan,
+        days: prev.exercisePlan.days.filter((_, index) => index !== dayIndex)
+      }
+    }));
+  };
+
+  // Replace exercise with another exercise
+  const replaceExercise = (dayIndex, exerciseIndex) => {
+    // For now, we'll add a simple exercise replacement
+    // This can be enhanced with a modal to select from exercise database
+    const newExercise = {
+      name: 'New Exercise',
+      type: 'strength',
+      sets: 3,
+      reps: 10,
+      duration: 0,
+      rest: 60,
+      progressionEnabled: true,
+      progressionSettings: getExerciseProgressionDefaults('strength', planData.goalType)
+    };
+
+    setPlanData(prev => ({
+      ...prev,
+      exercisePlan: {
+        ...prev.exercisePlan,
+        days: prev.exercisePlan.days.map((day, index) => 
+          index === dayIndex 
+            ? { 
+                ...day, 
+                exercises: day.exercises.map((exercise, exIndex) => 
+                  exIndex === exerciseIndex ? newExercise : exercise
+                )
+              }
+            : day
+        )
+      }
+    }));
+  };
+
+  // Helper functions for day-specific search management
+  const updateDaySearchTerm = (dayIndex, value) => {
+    setDaySearchTerms(prev => ({ ...prev, [dayIndex]: value }));
+    setDayShowDropdowns(prev => ({ ...prev, [dayIndex]: value.length > 0 }));
+  };
+
+  const updateDayCategory = (dayIndex, value) => {
+    setDaySelectedCategories(prev => ({ ...prev, [dayIndex]: value }));
+  };
+
+  const selectExerciseFromDaySearch = (dayIndex, exercise) => {
+    addExerciseToDay(dayIndex, exercise);
+  };
+
+  // Meal planning functions
+  const updateMealSearchTerm = (mealIndex, value) => {
+    setMealSearchTerms(prev => ({ ...prev, [mealIndex]: value }));
+    setMealShowDropdowns(prev => ({ ...prev, [mealIndex]: value.length > 0 }));
+  };
+
+  const addFoodToMeal = (dayIndex, mealIndex, food) => {
+    const updatedDays = [...planData.mealPlan.days];
+    updatedDays[dayIndex].meals[mealIndex].foods.push({
+      id: food.id,
+      name: food.name,
+      quantity: 100,
+      unit: food.unit || 'g'
+    });
+    
+    setPlanData(prev => ({
+      ...prev,
+      mealPlan: { ...prev.mealPlan, days: updatedDays }
+    }));
+  };
+
+  const addMealToMeal = (dayIndex, mealIndex, meal) => {
+    const updatedDays = [...planData.mealPlan.days];
+    updatedDays[dayIndex].meals[mealIndex].meals.push({
+      id: meal.id,
+      name: meal.name,
+      description: meal.description
+    });
+    
+    setPlanData(prev => ({
+      ...prev,
+      mealPlan: { ...prev.mealPlan, days: updatedDays }
+    }));
+  };
+
+  const removeFoodFromMeal = (dayIndex, mealIndex, foodIndex) => {
+    const updatedDays = [...planData.mealPlan.days];
+    updatedDays[dayIndex].meals[mealIndex].foods.splice(foodIndex, 1);
+    
+    setPlanData(prev => ({
+      ...prev,
+      mealPlan: { ...prev.mealPlan, days: updatedDays }
+    }));
+  };
+
+  const removeMealFromMeal = (dayIndex, mealIndex, mealIndex2) => {
+    const updatedDays = [...planData.mealPlan.days];
+    updatedDays[dayIndex].meals[mealIndex].meals.splice(mealIndex2, 1);
+    
+    setPlanData(prev => ({
+      ...prev,
+      mealPlan: { ...prev.mealPlan, days: updatedDays }
+    }));
+  };
+
+
+
+  // Add custom meal type
+  const addCustomMealType = () => {
+    const customName = prompt("Enter custom meal type name:");
+    if (customName && customName.trim()) {
+      const newMealType = {
+        value: `custom_${Date.now()}`,
+        label: customName.trim()
+      };
+      setCustomMealTypes(prev => [...prev, newMealType]);
+    }
+  };
+
+  // Update meal type
+  const updateMealType = (dayIndex, mealIndex, mealType) => {
+    const updatedDays = [...planData.mealPlan.days];
+    const mealTypeData = getAllMealTypes().find(type => type.value === mealType);
+    updatedDays[dayIndex].meals[mealIndex].mealType = mealType;
+    updatedDays[dayIndex].meals[mealIndex].mealName = mealTypeData?.label || mealType;
+    
+    setPlanData(prev => ({
+      ...prev,
+      mealPlan: { ...prev.mealPlan, days: updatedDays }
+    }));
+  };
+
+  // Update meal option selection
+  const updateMealOption = (dayIndex, mealIndex, optionId) => {
+    const updatedDays = [...planData.mealPlan.days];
+    updatedDays[dayIndex].meals[mealIndex].selectedOption = optionId;
+    
+    setPlanData(prev => ({
+      ...prev,
+      mealPlan: { ...prev.mealPlan, days: updatedDays }
+    }));
+  };
+
+  // Add food or meal to meal option
+  const addFoodToMealOption = (mealType, optionId, item) => {
+    console.log('Adding item to meal option:', { mealType, optionId, item });
+    
+    const updatedMealOptions = { ...planData.mealPlan.mealOptions };
+    const option = updatedMealOptions[mealType].find(opt => opt.id === optionId);
+    
+    console.log('Found option:', option);
+    console.log('Available meal types:', Object.keys(updatedMealOptions));
+    
+    if (option) {
+      // Calculate quantities for the meal
+      const mealPlan = calculateMealPlan();
+      if (mealPlan) {
+        const mealIndex = getAllMealTypes().findIndex(type => type.value === mealType);
+        const mealTargets = mealPlan.mealTargets[mealIndex];
+        
+        console.log('Meal targets:', mealTargets);
+        
+        if (item.type === 'food') {
+          console.log('Adding food item:', item);
+          // Add individual food with calculated nutrition
+          const quantity = 100; // Default quantity
+          const multiplier = quantity / 100;
+          
+          const calculatedFood = {
+            id: item.id,
+            name: item.name,
+            calories: item.calories,
+            protein: item.protein,
+            carbs: item.carbs,
+            fat: item.fat,
+            unit: item.unit || 'g',
+            quantity: quantity,
+            originalQuantity: quantity,
+            itemType: 'food', // Mark as individual food
+            calculatedCalories: Math.round((item.calories || 0) * multiplier),
+            calculatedProtein: Math.round((item.protein || 0) * multiplier * 10) / 10,
+            calculatedCarbs: Math.round((item.carbs || 0) * multiplier * 10) / 10,
+            calculatedFat: Math.round((item.fat || 0) * multiplier * 10) / 10
+          };
+          
+          const updatedFoods = [...option.foods, calculatedFood];
+          const foodQuantities = calculateFoodQuantities(updatedFoods, mealTargets);
+          option.foods = foodQuantities;
+          console.log('Updated foods:', option.foods);
+        } else if (item.type === 'meal') {
+          console.log('Adding meal item:', item);
+          // Add meal (which contains multiple foods)
+          const mealIngredients = item.ingredients || [];
+          console.log('Meal ingredients:', mealIngredients);
+          
+          // Convert ingredients to foods by looking up the food data
+          const mealFoods = mealIngredients.map(ingredient => {
+            console.log('=== MEAL INGREDIENT PROCESSING ===');
+            console.log('Processing ingredient:', ingredient);
+            console.log('Available foods:', foods.length);
+            console.log('Sample foods:', foods.slice(0, 3).map(f => ({ id: f.id, foodId: f.foodId, name: f.name, calories: f.calories })));
+            
+            // Try multiple ways to find the food
+            let food = foods.find(f => f.foodId === ingredient.foodId);
+            if (!food) {
+              food = foods.find(f => f.id === ingredient.foodId);
+            }
+            if (!food) {
+              // Try to find by name as fallback
+              food = foods.find(f => f.name.toLowerCase().includes(ingredient.foodId.toLowerCase()));
+            }
+            console.log('Looking up food for ingredient:', ingredient, 'Found food:', food);
+            
+            if (food) {
+              const quantity = ingredient.quantity || 100;
+              const multiplier = quantity / 100;
+              
+              console.log('✅ FOOD FOUND!');
+              console.log('Food nutrition values:', {
+                calories: food.calories,
+                protein: food.protein,
+                carbs: food.carbs,
+                fat: food.fats
+              });
+              console.log('Quantity:', quantity, 'Multiplier:', multiplier);
+              console.log('Raw calculations:');
+              console.log('- Calories: ', food.calories, ' * ', multiplier, ' = ', Math.round((food.calories || 0) * multiplier));
+              console.log('- Protein: ', food.protein, ' * ', multiplier, ' = ', Math.round((food.protein || 0) * multiplier * 10) / 10);
+              console.log('- Carbs: ', food.carbs, ' * ', multiplier, ' = ', Math.round((food.carbs || 0) * multiplier * 10) / 10);
+              console.log('- Fat: ', food.fats, ' * ', multiplier, ' = ', Math.round((food.fats || 0) * multiplier * 10) / 10);
+              
+              // The comprehensive food database stores per-100g values directly
+              const calculatedFood = {
+                id: food.foodId || food.id,
+                name: food.name,
+                calories: food.calories, // Keep original per-100g values
+                protein: food.protein,
+                carbs: food.carbs,
+                fat: food.fats,
+                unit: food.unit || 'g',
+                quantity: quantity,
+                originalQuantity: quantity,
+                itemType: 'meal_ingredient', // Mark as meal ingredient
+                calculatedCalories: Math.round((food.calories || 0) * multiplier),
+                calculatedProtein: Math.round((food.protein || 0) * multiplier * 10) / 10,
+                calculatedCarbs: Math.round((food.carbs || 0) * multiplier * 10) / 10,
+                calculatedFat: Math.round((food.fats || 0) * multiplier * 10) / 10
+              };
+              
+              console.log('✅ FINAL CALCULATED FOOD:', calculatedFood);
+              return calculatedFood;
+            }
+            console.log('❌ FOOD NOT FOUND for ingredient:', ingredient);
+            console.log('Tried to find food with foodId:', ingredient.foodId);
+            console.log('Available foodIds:', foods.map(f => f.foodId).slice(0, 10));
+            console.log('Available ids:', foods.map(f => f.id).slice(0, 10));
+            return null;
+          }).filter(food => food !== null);
+          
+          console.log('Converted meal foods:', mealFoods);
+          
+          // Add the meal as a single item with nested ingredients
+          const mealItem = {
+            id: item.id,
+            name: item.name,
+            description: item.description,
+            itemType: 'meal', // Mark as a complete meal
+            ingredients: mealFoods,
+            // Calculate total nutrition for the meal
+            calculatedCalories: mealFoods.reduce((sum, food) => sum + (food.calculatedCalories || 0), 0),
+            calculatedProtein: Math.round(mealFoods.reduce((sum, food) => sum + (food.calculatedProtein || 0), 0) * 10) / 10,
+            calculatedCarbs: Math.round(mealFoods.reduce((sum, food) => sum + (food.calculatedCarbs || 0), 0) * 10) / 10,
+            calculatedFat: Math.round(mealFoods.reduce((sum, food) => sum + (food.calculatedFat || 0), 0) * 10) / 10
+          };
+          
+          const updatedFoods = [...option.foods, mealItem];
+          option.foods = updatedFoods;
+          console.log('Updated foods from meal:', option.foods);
+        }
+      } else {
+        console.log('No meal plan calculated, adding without quantities');
+        if (item.type === 'food') {
+          option.foods.push({
+            id: item.id,
+            name: item.name,
+            quantity: 100,
+            unit: item.unit || 'g'
+          });
+        } else if (item.type === 'meal') {
+          const mealIngredients = item.ingredients || [];
+          const mealFoods = mealIngredients.map(ingredient => {
+            // Try multiple ways to find the food
+            let food = foods.find(f => f.foodId === ingredient.foodId);
+            if (!food) {
+              food = foods.find(f => f.id === ingredient.foodId);
+            }
+            if (!food) {
+              // Try to find by name as fallback
+              food = foods.find(f => f.name.toLowerCase().includes(ingredient.foodId.toLowerCase()));
+            }
+            if (food) {
+              return {
+                id: food.foodId || food.id,
+                name: food.name,
+                quantity: ingredient.quantity || 100,
+                unit: food.unit || 'g',
+                originalQuantity: ingredient.quantity || 100
+              };
+            }
+            return null;
+          }).filter(food => food !== null);
+          option.foods.push(...mealFoods);
+        }
+      }
+    } else {
+      console.error('Option not found for mealType:', mealType, 'optionId:', optionId);
+    }
+    
+    setPlanData(prev => ({
+      ...prev,
+      mealPlan: { ...prev.mealPlan, mealOptions: updatedMealOptions }
+    }));
+  };
+
+  // Update meal target
+  const updateMealTarget = (mealIndex, field, value) => {
+    const mealPlan = calculateMealPlan();
+    if (mealPlan && mealPlan.mealTargets[mealIndex]) {
+      mealPlan.mealTargets[mealIndex][field] = value;
+      // Recalculate quantities for all meal options
+      const updatedMealOptions = { ...planData.mealPlan.mealOptions };
+      
+      Object.keys(updatedMealOptions).forEach(mealType => {
+        updatedMealOptions[mealType].forEach(option => {
+          if (option.foods && option.foods.length > 0) {
+            const mealTypeIndex = getAllMealTypes().findIndex(type => type.value === mealType);
+            if (mealTypeIndex === mealIndex) {
+              const foodQuantities = calculateFoodQuantities(option.foods, mealPlan.mealTargets[mealIndex]);
+              option.foods = foodQuantities;
+            }
+          }
+        });
+      });
+      
+      setPlanData(prev => ({
+        ...prev,
+        mealPlan: { ...prev.mealPlan, mealOptions: updatedMealOptions }
+      }));
+    }
+  };
+
+  // Update food quantity
+  const updateFoodQuantity = (mealType, optionId, foodIndex, newQuantity) => {
+    console.log('Updating food quantity:', { mealType, optionId, foodIndex, newQuantity });
+    
+    const updatedMealOptions = { ...planData.mealPlan.mealOptions };
+    const option = updatedMealOptions[mealType].find(opt => opt.id === optionId);
+    if (option && option.foods[foodIndex]) {
+      const food = option.foods[foodIndex];
+      const multiplier = newQuantity / 100; // Convert grams to multiplier
+      
+      console.log('Food before update:', food);
+      console.log('Multiplier:', multiplier);
+      
+      // The comprehensive food database stores per-100g values directly
+      option.foods[foodIndex] = {
+        ...food,
+        quantity: newQuantity,
+        calculatedCalories: Math.round((food.calories || 0) * multiplier),
+        calculatedProtein: Math.round((food.protein || 0) * multiplier * 10) / 10,
+        calculatedCarbs: Math.round((food.carbs || 0) * multiplier * 10) / 10,
+        calculatedFat: Math.round((food.fat || 0) * multiplier * 10) / 10
+      };
+      
+      console.log('Food after update:', option.foods[foodIndex]);
+      
+      setPlanData(prev => ({
+        ...prev,
+        mealPlan: { ...prev.mealPlan, mealOptions: updatedMealOptions }
+      }));
+    }
+  };
+
+  // Remove food from meal option
+  const removeFoodFromMealOption = (mealType, optionId, foodIndex) => {
+    const updatedMealOptions = { ...planData.mealPlan.mealOptions };
+    const option = updatedMealOptions[mealType].find(opt => opt.id === optionId);
+    if (option) {
+      option.foods.splice(foodIndex, 1);
+    }
+    
+    setPlanData(prev => ({
+      ...prev,
+      mealPlan: { ...prev.mealPlan, mealOptions: updatedMealOptions }
+    }));
+  };
+
+  // Update meal ingredient quantity
+  const updateMealIngredientQuantity = (mealType, optionId, mealIndex, ingredientIndex, newQuantity) => {
+    setPlanData(prev => {
+      const newData = { ...prev };
+      const option = newData.mealPlan.mealOptions[mealType]?.find(opt => opt.id === optionId);
+      if (option && option.foods[mealIndex] && option.foods[mealIndex].itemType === 'meal') {
+        const meal = option.foods[mealIndex];
+        const ingredient = meal.ingredients[ingredientIndex];
+        
+        if (ingredient) {
+          // Update the ingredient quantity
+          ingredient.quantity = newQuantity;
+          
+          // Recalculate the ingredient's nutrition based on new quantity
+          const multiplier = newQuantity / 100;
+          ingredient.calculatedCalories = Math.round((ingredient.calories || 0) * multiplier);
+          ingredient.calculatedProtein = Math.round((ingredient.protein || 0) * multiplier * 10) / 10;
+          ingredient.calculatedCarbs = Math.round((ingredient.carbs || 0) * multiplier * 10) / 10;
+          ingredient.calculatedFat = Math.round((ingredient.fat || 0) * multiplier * 10) / 10;
+          
+          // Recalculate the meal's total nutrition
+          meal.calculatedCalories = meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedCalories || 0), 0);
+          meal.calculatedProtein = Math.round(meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedProtein || 0), 0) * 10) / 10;
+          meal.calculatedCarbs = Math.round(meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedCarbs || 0), 0) * 10) / 10;
+          meal.calculatedFat = Math.round(meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedFat || 0), 0) * 10) / 10;
+        }
+      }
+      return newData;
+    });
+  };
+
+  // Add ingredient to meal instance
+  const addIngredientToMealInstance = (mealType, optionId, mealIndex, food) => {
+    setPlanData(prev => {
+      const newData = { ...prev };
+      const option = newData.mealPlan.mealOptions[mealType]?.find(opt => opt.id === optionId);
+      if (option && option.foods[mealIndex] && option.foods[mealIndex].itemType === 'meal') {
+        const meal = option.foods[mealIndex];
+        
+        // Check if food already exists in this meal
+        const existingIngredient = meal.ingredients.find(ing => ing.id === food.id || ing.name === food.name);
+        if (existingIngredient) {
+          // Food already exists - don't add duplicate
+          return newData;
+        }
+        
+        // Create new ingredient
+        const newIngredient = {
+          id: food.id,
+          name: food.name,
+          calories: food.calories,
+          protein: food.protein,
+          carbs: food.carbs,
+          fat: food.fat,
+          quantity: 100, // Default quantity
+          calculatedCalories: food.calories || 0,
+          calculatedProtein: food.protein || 0,
+          calculatedCarbs: food.carbs || 0,
+          calculatedFat: food.fat || 0
+        };
+        
+        // Add to meal ingredients
+        meal.ingredients.push(newIngredient);
+        
+        // Recalculate meal's total nutrition
+        meal.calculatedCalories = meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedCalories || 0), 0);
+        meal.calculatedProtein = Math.round(meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedProtein || 0), 0) * 10) / 10;
+        meal.calculatedCarbs = Math.round(meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedCarbs || 0), 0) * 10) / 10;
+        meal.calculatedFat = Math.round(meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedFat || 0), 0) * 10) / 10;
+      }
+      return newData;
+    });
+  };
+
+  // Remove ingredient from meal instance
+  const removeIngredientFromMealInstance = (mealType, optionId, mealIndex, ingredientIndex) => {
+    setPlanData(prev => {
+      const newData = { ...prev };
+      const option = newData.mealPlan.mealOptions[mealType]?.find(opt => opt.id === optionId);
+      if (option && option.foods[mealIndex] && option.foods[mealIndex].itemType === 'meal') {
+        const meal = option.foods[mealIndex];
+        
+        // Remove ingredient
+        meal.ingredients.splice(ingredientIndex, 1);
+        
+        // Recalculate meal's total nutrition
+        meal.calculatedCalories = meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedCalories || 0), 0);
+        meal.calculatedProtein = Math.round(meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedProtein || 0), 0) * 10) / 10;
+        meal.calculatedCarbs = Math.round(meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedCarbs || 0), 0) * 10) / 10;
+        meal.calculatedFat = Math.round(meal.ingredients.reduce((sum, ing) => sum + (ing.calculatedFat || 0), 0) * 10) / 10;
+      }
+      return newData;
+    });
+  };
+
+  // Get filtered foods for meal instance search
+  const getFilteredFoodsForMealInstance = (mealType, optionId, mealIndex) => {
+    const searchTerm = mealInstanceSearchTerms[`${mealType}-${optionId}-${mealIndex}`] || '';
+    if (!searchTerm.trim()) return foods.slice(0, 10);
+    
+    return foods.filter(food => 
+      food.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      food.category?.toLowerCase().includes(searchTerm.toLowerCase())
+    ).slice(0, 10);
+  };
+
+  // Update meal instance search term
+  const updateMealInstanceSearchTerm = (mealType, optionId, mealIndex, value) => {
+    setMealInstanceSearchTerms(prev => ({
+      ...prev,
+      [`${mealType}-${optionId}-${mealIndex}`]: value
+    }));
+    
+    // Show dropdown when typing
+    if (value.trim()) {
+      setMealInstanceShowDropdowns(prev => ({
+        ...prev,
+        [`${mealType}-${optionId}-${mealIndex}`]: true
+      }));
+    } else {
+      setMealInstanceShowDropdowns(prev => ({
+        ...prev,
+        [`${mealType}-${optionId}-${mealIndex}`]: false
+      }));
+    }
+  };
+
+  // Select food for meal instance
+  const selectFoodForMealInstance = (mealType, optionId, mealIndex, food) => {
+    addIngredientToMealInstance(mealType, optionId, mealIndex, food);
+    
+    // Clear search
+    setMealInstanceSearchTerms(prev => ({
+      ...prev,
+      [`${mealType}-${optionId}-${mealIndex}`]: ''
+    }));
+    setMealInstanceShowDropdowns(prev => ({
+      ...prev,
+      [`${mealType}-${optionId}-${mealIndex}`]: false
+    }));
+  };
+
+  // Update meal name in meal instance
+  const updateMealInstanceName = (mealType, optionId, mealIndex, newName) => {
+    setPlanData(prev => {
+      const newData = { ...prev };
+      const option = newData.mealPlan.mealOptions[mealType]?.find(opt => opt.id === optionId);
+      if (option && option.foods[mealIndex] && option.foods[mealIndex].itemType === 'meal') {
+        option.foods[mealIndex].name = newName;
+      }
+      return newData;
+    });
+  };
+
+  // Generate progressive plan
+  const generateProgressivePlan = () => {
+    const basePlan = planData.exercisePlan.days;
+    const progressivePlan = [];
+
+    // Calculate progression frequency based on goal
+    const getExerciseProgressionFrequency = () => {
+      switch (user.fitnessGoal) {
+        case 'Fat Loss / Weight Reduction': return 2; // Every 2 weeks
+        case 'Muscle Gain / Strength Building': return 1; // Every week (more aggressive for strength)
+        case 'Body Recomposition (Lose fat & build muscle)': return 2; // Every 2 weeks
+        case 'General Health & Wellness': return 3; // Every 3 weeks
+        default: return 2;
+      }
+    };
+    
+    const progressionFrequency = getExerciseProgressionFrequency();
+
+    for (let week = 1; week <= progressiveWeeks; week++) {
+      // Apply progression based on frequency
+      const effectiveWeek = Math.floor((week - 1) / progressionFrequency) * progressionFrequency + 1;
+      const weekIncrement = Math.floor((effectiveWeek - 1) / progressionFrequency);
+      
+      const weekPlan = basePlan.map(day => ({
+        ...day,
+        exercises: day.exercises.map(exercise => {
+          if (!exercise.progressionEnabled) {
+            return exercise; // No progression for this exercise
+          }
+          
+          // Use exercise-specific progression settings
+          const progression = exercise.progressionSettings || planData.progressiveSettings.weeklyIncrements;
+          
+          return {
+            ...exercise,
+            sets: exercise.sets + (progression.setsIncrement * weekIncrement),
+            reps: exercise.reps + (progression.repsIncrement * weekIncrement),
+            duration: exercise.duration + (progression.durationIncrement * weekIncrement),
+            rest: Math.max(30, exercise.rest + (progression.restIncrement * weekIncrement))
+          };
+        })
+      }));
+      progressivePlan.push(weekPlan);
+    }
+
+    return progressivePlan;
+  };
+
+  // Generate progressive meal plan
+  const generateProgressiveMealPlan = () => {
+    const baseMealPlan = planData.mealPlan.days;
+    const progressiveMealPlan = [];
+
+    // Calculate progression frequency based on goal
+    const getMealProgressionFrequency = () => {
+      switch (user.fitnessGoal) {
+        case 'Fat Loss / Weight Reduction': return 2; // Every 2 weeks
+        case 'Muscle Gain / Strength Building': return 2; // Every 2 weeks
+        case 'Body Recomposition (Lose fat & build muscle)': return 3; // Every 3 weeks
+        case 'General Health & Wellness': return 4; // Every 4 weeks
+        default: return 2;
+      }
+    };
+    
+    const progressionFrequency = getMealProgressionFrequency();
+
+    for (let week = 1; week <= progressiveWeeks; week++) {
+      // Apply progression based on frequency
+      const effectiveWeek = Math.floor((week - 1) / progressionFrequency) * progressionFrequency + 1;
+      const weekIncrement = Math.floor((effectiveWeek - 1) / progressionFrequency);
+      
+      // Create 7 days with the same meal plan (one day repeated)
+      const weekMealPlan = [];
+      for (let day = 0; day < 7; day++) {
+        const dayMealPlan = baseMealPlan[0]; // Use the single day plan
+        weekMealPlan.push({
+          ...dayMealPlan,
+          dayNumber: day + 1,
+          dayName: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][day],
+          meals: dayMealPlan.meals.map(meal => {
+            // Get base nutrition from user calculation
+            const nutrition = calculateUserNutrition();
+            const baseCalories = nutrition ? nutrition.targetCalories : 2000;
+            const baseProtein = nutrition ? nutrition.proteinGrams : 150;
+            const baseCarbs = nutrition ? nutrition.carbGrams : 200;
+            const baseFats = nutrition ? nutrition.fatGrams : 65;
+            
+            let targetCalories = baseCalories + (planData.progressiveSettings.mealProgression.calorieIncrement * weekIncrement);
+            let targetProtein = baseProtein + (planData.progressiveSettings.mealProgression.proteinIncrement * weekIncrement);
+            let targetCarbs = baseCarbs + (planData.progressiveSettings.mealProgression.carbIncrement * weekIncrement);
+            let targetFats = baseFats + (planData.progressiveSettings.mealProgression.fatIncrement * weekIncrement);
+            
+            return {
+              ...meal,
+              targetCalories: Math.round(targetCalories),
+              targetProtein: Math.round(targetProtein),
+              targetCarbs: Math.round(targetCarbs),
+              targetFats: Math.round(targetFats)
+            };
+          })
+        });
+      }
+      progressiveMealPlan.push(weekMealPlan);
+    }
+
+    return progressiveMealPlan;
+  };
+
+  const handleNext = () => {
+    if (currentStep === 1) {
+      // Step 1: Goal & Duration → Step 2: Exercise Plan
+      if (!selectedDuration) {
+        alert('Please select a plan duration to continue.');
+        return;
+      }
+      
+      setStepCompletion(prev => ({ ...prev, step1: true }));
+      setCurrentStep(2);
+    } else if (currentStep === 2) {
+      // Step 2: Exercise Plan → Step 3: Meal Plan
+      if (!selectedExerciseTemplate || planData.exercisePlan.days.length === 0) {
+        alert('Please complete the exercise plan first.');
+        return;
+      }
+      
+      setStepCompletion(prev => ({ ...prev, step2: true }));
+      setCurrentStep(3);
+    } else if (currentStep === 3) {
+      // Step 3: Meal Plan → Step 4: Review & Assign
+      if (!selectedMealTemplate || planData.mealPlan.meals.length === 0) {
+        alert('Please complete the meal plan first.');
+        return;
+      }
+      
+      setStepCompletion(prev => ({ ...prev, step3: true }));
+      setCurrentStep(4);
+    } else {
+      // Step 4: Review & Assign (final step)
+      setStepCompletion(prev => ({ ...prev, step4: true }));
+    }
+  };
+
+  const handlePrevious = () => {
+    setCurrentStep(prev => Math.max(prev - 1, 1));
+  };
+
+  const handleSavePlan = async () => {
+    try {
+      const progressivePlan = generateProgressivePlan();
+      const progressiveMealPlan = generateProgressiveMealPlan();
+      
+      const planToSave = {
+        userId: user.uid,
+        userName: user.name,
+        goalType: planData.goalType,
+        duration: planData.duration,
+        progressiveWeeks: progressiveWeeks,
+        progressiveSettings: planData.progressiveSettings,
+        exercisePlan: {
+          ...planData.exercisePlan,
+          progressivePlan: progressivePlan
+        },
+        mealPlan: {
+          ...planData.mealPlan,
+          progressivePlan: progressiveMealPlan
+        },
+        createdAt: new Date(),
+        status: 'active'
+      };
+
+      await addDoc(collection(db, "userPlans"), planToSave);
+      alert("Plan created successfully!");
+      onPlanCreated();
+      onClose();
+    } catch (error) {
+      console.error("Error saving plan:", error);
+      alert("Error saving plan: " + error.message);
+    }
+  };
+
+  if (loading) {
+    return <div>Loading...</div>;
+  }
+
+  return (
+    <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      width: '100%',
+      height: '100%',
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      zIndex: 1000
+    }}>
+      <div style={{
+        backgroundColor: 'white',
+        padding: '30px',
+        borderRadius: '8px',
+        width: '95%',
+        maxWidth: '1200px',
+        maxHeight: '90vh',
+        overflowY: 'auto'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <h2>Create Plan for {user?.name}</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer' }}>×</button>
+        </div>
+
+        {/* Progress Steps */}
+        <div style={{ display: 'flex', marginBottom: '20px', gap: '10px', flexWrap: 'wrap' }}>
+          {[1, 2, 3, 4].map(step => (
+            <div key={step} style={{
+              padding: '10px 20px',
+              backgroundColor: currentStep === step ? '#007bff' : currentStep > step ? '#28a745' : '#e9ecef',
+              color: currentStep >= step ? 'white' : '#6c757d',
+              borderRadius: '20px',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              position: 'relative'
+            }}>
+              {step === 1 && 'Goal & Duration'}
+              {step === 2 && 'Exercise Plan'}
+              {step === 3 && 'Meal Plan'}
+              {step === 4 && 'Review & Assign'}
+              {stepCompletion[`step${step}`] && (
+                <span style={{ 
+                  position: 'absolute', 
+                  top: '-5px', 
+                  right: '-5px', 
+                  backgroundColor: '#28a745', 
+                  color: 'white', 
+                  borderRadius: '50%', 
+                  width: '20px', 
+                  height: '20px', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center', 
+                  fontSize: '12px' 
+                }}>
+                  ✓
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Step 1: Goal Selection & Smart Duration */}
+        {currentStep === 1 && (
+          <div>
+            <h3>Step 1: Confirm Fitness Goal & Plan Duration</h3>
+            <div style={{ marginBottom: '20px' }}>
+              <p><strong>User's Selected Goal:</strong> {user?.fitnessGoal}</p>
+              <p><strong>Current Weight:</strong> {user?.weight} {user?.weightUnit}</p>
+              <p><strong>Target Weight:</strong> {user?.targetWeight} {user?.targetWeightUnit}</p>
+              <p><strong>Workout Frequency:</strong> {user?.smartScheduleWorkoutsPerWeek} times per week</p>
+              <p><strong>Age:</strong> {user?.age} years</p>
+              <p><strong>Gender:</strong> {user?.gender}</p>
+              <p><strong>Fitness Experience:</strong> {user?.experienceLevel}</p>
+              <p><strong>Strength Experience:</strong> {user?.strengthExperience}</p>
+              <p><strong>Workout Duration:</strong> {user?.workoutDuration} minutes</p>
+              <p><strong>Activity Level:</strong> {user?.activityLevel}</p>
+            </div>
+            
+            {/* Smart Duration Calculation */}
+            {realisticDuration && (
+              <div style={{ 
+                backgroundColor: '#e8f5e8', 
+                padding: '20px', 
+                borderRadius: '8px',
+                marginBottom: '20px',
+                border: '2px solid #28a745'
+              }}>
+                <h4>🎯 Smart Duration Calculation</h4>
+                <div style={{ marginBottom: '15px' }}>
+                  <p><strong>Calculation:</strong> {realisticDuration.explanation}</p>
+                  <p><strong>Weekly Rate:</strong> {realisticDuration.weeklyRate} kg/week</p>
+                  <p><strong>Realistic Range:</strong> {realisticDuration.minDuration} - {realisticDuration.maxDuration} weeks</p>
+                </div>
+                
+                {/* Factor Breakdown */}
+            <div style={{ 
+              backgroundColor: '#f8f9fa', 
+                  padding: '15px', 
+                  borderRadius: '6px',
+                  marginBottom: '15px'
+                }}>
+                  <h5 style={{ margin: '0 0 10px 0', color: '#495057' }}>📊 Calculation Factors</h5>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px', fontSize: '14px' }}>
+                    <div><strong>Age:</strong> {realisticDuration.factors.age} years</div>
+                    <div><strong>Gender:</strong> {realisticDuration.factors.gender}</div>
+                    <div><strong>Fitness Experience:</strong> {realisticDuration.factors.experienceLevel}</div>
+                    <div><strong>Strength Experience:</strong> {realisticDuration.factors.strengthExperience}</div>
+                    <div><strong>Workout Frequency:</strong> {realisticDuration.factors.workoutFrequency} days/week</div>
+                    <div><strong>Workout Duration:</strong> {realisticDuration.factors.workoutDuration} minutes</div>
+                    <div><strong>Activity Multiplier:</strong> {realisticDuration.factors.activityMultiplier?.toFixed(2)}x</div>
+                    <div><strong>Weight Change:</strong> {realisticDuration.factors.weightDifference}kg</div>
+                  </div>
+                </div>
+                
+                {/* Warnings */}
+                {realisticDuration.warnings && realisticDuration.warnings.length > 0 && (
+                  <div style={{ 
+                    backgroundColor: '#fff3cd', 
+                    padding: '15px', 
+                    borderRadius: '6px',
+                    marginBottom: '15px',
+                    border: '1px solid #ffeaa7'
+                  }}>
+                    <h5 style={{ margin: '0 0 10px 0', color: '#856404' }}>⚠️ Important Considerations</h5>
+                    {realisticDuration.warnings.map((warning, index) => (
+                      <p key={index} style={{ margin: '5px 0', fontSize: '14px', color: '#856404' }}>
+                        • {warning}
+                      </p>
+                    ))}
+                  </div>
+                )}
+                
+                {/* Duration Selection */}
+                <div style={{ marginBottom: '15px' }}>
+                  <h5 style={{ margin: '0 0 10px 0', color: '#495057' }}>Select Plan Duration:</h5>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {durationOptions.map((option, index) => (
+                      <label key={index} style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        padding: '12px',
+                        border: '2px solid',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        backgroundColor: selectedDuration === option.value ? '#e3f2fd' : 'white',
+                        borderColor: selectedDuration === option.value ? '#2196f3' : '#dee2e6'
+                      }}>
+                        <input
+                          type="radio"
+                          name="duration"
+                          value={option.value}
+                          checked={selectedDuration === option.value}
+                          onChange={(e) => {
+                            setSelectedDuration(parseInt(e.target.value));
+                            setPlanData(prev => ({
+                              ...prev,
+                              duration: parseInt(e.target.value)
+                            }));
+                          }}
+                          style={{ marginRight: '10px', transform: 'scale(1.2)' }}
+                        />
+                        <div>
+                          <div style={{ fontWeight: 'bold', color: option.recommended ? '#28a745' : '#495057' }}>
+                            {option.label}
+                            {option.recommended && <span style={{ marginLeft: '8px', color: '#28a745' }}>⭐</span>}
+                          </div>
+                          <div style={{ fontSize: '13px', color: '#6c757d', marginTop: '2px' }}>
+                            {option.description}
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {/* Nutrition Calculation Display */}
+            <div style={{ 
+              backgroundColor: '#e7f3ff', 
+              padding: '20px', 
+              borderRadius: '8px',
+              marginBottom: '20px',
+              border: '1px solid #b3d9ff'
+            }}>
+              <h4>📊 Nutrition Calculation</h4>
+              {(() => {
+                const nutrition = calculateUserNutrition();
+                if (!nutrition) return <p>Unable to calculate nutrition - missing user data</p>;
+                
+                return (
+                  <div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '15px' }}>
+                      <div>
+                        <h5 style={{ margin: '0 0 10px 0', color: '#0056b3' }}>Daily Targets</h5>
+                        <p><strong>BMR:</strong> {nutrition.bmr} calories</p>
+                        <p><strong>TDEE:</strong> {nutrition.tdee} calories</p>
+                        <p><strong>Target Calories:</strong> {nutrition.targetCalories} calories</p>
+                        <p><strong>Calorie Adjustment:</strong> {nutrition.calorieAdjustment > 0 ? '+' : ''}{nutrition.calorieAdjustment} calories</p>
+                      </div>
+                      <div>
+                        <h5 style={{ margin: '0 0 10px 0', color: '#0056b3' }}>Macro Distribution</h5>
+                        <p><strong>Protein:</strong> {nutrition.proteinGrams}g ({Math.round(nutrition.proteinRatio * 100)}%)</p>
+                        <p><strong>Carbs:</strong> {nutrition.carbGrams}g ({Math.round(nutrition.carbRatio * 100)}%)</p>
+                        <p><strong>Fats:</strong> {nutrition.fatGrams}g ({Math.round(nutrition.fatRatio * 100)}%)</p>
+                      </div>
+                    </div>
+                    
+                    <div style={{ 
+                      backgroundColor: '#fff3cd', 
+                      padding: '10px', 
+                      borderRadius: '4px',
+                      border: '1px solid #ffeaa7'
+                    }}>
+                      <p style={{ margin: '0', fontSize: '14px', color: '#856404' }}>
+                        <strong>Note:</strong> These calculations are based on user's age ({user.age}), weight ({user.weight}kg), 
+                        height ({user.height}cm), activity level ({user.activityLevel}), and fitness goal ({user.fitnessGoal}).
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: Exercise Plan Building */}
+        {currentStep === 2 && (
+          <div>
+            <h3>Step 2: Exercise Plan Building</h3>
+            <p>Build the complete exercise plan for the user.</p>
+            
+            {/* User Schedule Summary */}
+            <div style={{ 
+              backgroundColor: '#e7f3ff', 
+              padding: '15px', 
+              borderRadius: '8px', 
+              marginBottom: '30px',
+              border: '1px solid #b3d9ff'
+            }}>
+              <h5 style={{ margin: '0 0 10px 0', color: '#0056b3' }}>📋 User Schedule Summary</h5>
+              <div style={{ fontSize: '14px', color: '#666' }}>
+                <p style={{ margin: '0 0 5px 0' }}>
+                  <strong>Workout Frequency:</strong> {user?.smartScheduleWorkoutsPerWeek} days/week
+                </p>
+                <p style={{ margin: '0 0 5px 0' }}>
+                  <strong>Selected Days:</strong> {selectedExerciseDays || getRecommendedExerciseDays()} days
+                </p>
+                <p style={{ margin: '0' }}>
+                  <strong>Plan Duration:</strong> {selectedDuration} weeks
+                </p>
+              </div>
+            </div>
+            
+            {/* Exercise Template */}
+            <div style={{ marginBottom: '30px' }}>
+              <h4>💪 Exercise Template</h4>
+              <div style={{ 
+                backgroundColor: '#f8f9fa', 
+                padding: '15px', 
+                borderRadius: '8px',
+                border: '1px solid #dee2e6'
+              }}>
+                {selectedExerciseTemplate ? (
+                  <div>
+                    <p style={{ margin: '0 0 10px 0', fontWeight: 'bold', color: '#28a745' }}>
+                      ✅ Template Applied: {selectedExerciseTemplate.name}
+                    </p>
+                    <button
+                      onClick={() => setSelectedExerciseTemplate(null)}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#dc3545',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        marginRight: '10px'
+                      }}
+                    >
+                      Remove Template
+                    </button>
+                    <button
+                      onClick={() => {
+                        setTemplateSelectionType('exercise');
+                        setShowTemplateSelection(true);
+                      }}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#007bff',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Change Template
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <p style={{ margin: '0 0 10px 0', color: '#6c757d' }}>
+                      Start with a pre-built exercise template or create your own plan from scratch.
+                    </p>
+                    
+                    {/* Day Selection */}
+                    <div style={{ marginBottom: '15px' }}>
+                      <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+                        Recommended: {getRecommendedExerciseDays()} days/week (based on user frequency)
+                      </label>
+                      <select 
+                        value={selectedExerciseDays || getRecommendedExerciseDays()}
+                        onChange={(e) => setSelectedExerciseDays(parseInt(e.target.value))}
+                        style={{
+                          padding: '8px 12px',
+                          border: '1px solid #ddd',
+                          borderRadius: '4px',
+                          fontSize: '14px',
+                          marginRight: '10px'
+                        }}
+                      >
+                        <option value={3}>3 days/week</option>
+                        <option value={4}>4 days/week</option>
+                        <option value={5}>5 days/week</option>
+                        <option value={6}>6 days/week</option>
+                      </select>
+                    </div>
+                    
+                    {/* Template Selection Buttons */}
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => {
+                          setTemplateSelectionType('exercise');
+                          setShowTemplateSelection(true);
+                        }}
+                        style={{
+                          padding: '10px 20px',
+                          backgroundColor: '#007bff',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontSize: '14px'
+                        }}
+                      >
+                        Select Pre-built Template
+                      </button>
+                      <button
+                        onClick={() => setShowCustomExerciseCreation(true)}
+                        style={{
+                          padding: '10px 20px',
+                          backgroundColor: '#28a745',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontSize: '14px'
+                        }}
+                      >
+                        Create Custom Template
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+                            {/* Exercise Plan Builder */}
+                {selectedExerciseTemplate && (
+                  <div style={{ marginBottom: '30px' }}>
+                    <h4>🏋️ Exercise Plan Builder</h4>
+                    
+                    {/* Template Application */}
+                    <div style={{ 
+                      backgroundColor: '#d4edda', 
+                      padding: '15px', 
+                      borderRadius: '8px',
+                      marginBottom: '20px',
+                      border: '1px solid #c3e6cb'
+                    }}>
+                      <h6 style={{ margin: '0 0 10px 0', color: '#155724' }}>
+                        🎯 Template-Based Plan
+                      </h6>
+                      <p style={{ margin: '0 0 15px 0', fontSize: '14px', color: '#666' }}>
+                        {selectedExerciseTemplate.name} will be applied with {selectedExerciseDays || getRecommendedExerciseDays()} days per week.
+                      </p>
+                      
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <button
+                          onClick={() => {
+                            try {
+                                                        console.log('Applying template:', selectedExerciseTemplate);
+                          console.log('Selected days:', selectedExerciseDays);
+                          console.log('User workout frequency:', user?.smartScheduleWorkoutsPerWeek);
+                          console.log('Available dayOptions keys:', Object.keys(selectedExerciseTemplate.dayOptions || {}));
+                              
+                              // Safety checks for template and dayOptions
+                              if (!selectedExerciseTemplate || !selectedExerciseTemplate.dayOptions) {
+                                console.error('Template or dayOptions not found:', selectedExerciseTemplate);
+                                alert('Template data is incomplete. Please try selecting a different template.');
+                                return;
+                              }
+
+                              // Get the day option directly using the selected days as key
+                              const dayOption = selectedExerciseTemplate.dayOptions[selectedExerciseDays] || selectedExerciseTemplate.dayOptions[3];
+                              console.log('Selected day option:', dayOption);
+                              
+                              if (!dayOption || !Array.isArray(dayOption)) {
+                                console.error('Day option not found or invalid:', dayOption);
+                                alert('Template day configuration is invalid. Please try a different template.');
+                                return;
+                              }
+
+                              const updatedPlanData = {
+                                ...planData,
+                                exercisePlan: {
+                                  ...planData.exercisePlan,
+                                  days: dayOption.map((day, index) => ({
+                                    day: index + 1,
+                                    dayName: day.dayName || `Day ${index + 1}`,
+                                    focus: day.focus || 'General Fitness',
+                                    exercises: (day.exercises && Array.isArray(day.exercises)) ? day.exercises.map(exercise => ({
+                                      ...exercise,
+                                      progressionEnabled: true,
+                                      progressionSettings: getExerciseProgressionDefaults(exercise.type, planData.goalType)
+                                    })) : []
+                                  }))
+                                }
+                              };
+
+                              console.log('Updated plan data:', updatedPlanData);
+                              setPlanData(updatedPlanData);
+                              
+                              // Mark step as completed
+                              setStepCompletion(prev => ({ ...prev, step2: true }));
+                              
+                            } catch (error) {
+                              console.error('Error applying template:', error);
+                              alert('Error applying template. Please try again.');
+                            }
+                          }}
+                          style={{
+                            padding: '10px 20px',
+                            backgroundColor: '#28a745',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          Apply Template to Plan
+                        </button>
+                        <button
+                          onClick={() => setSelectedExerciseTemplate(null)}
+                          style={{
+                            padding: '10px 20px',
+                            backgroundColor: '#6c757d',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '14px'
+                          }}
+                        >
+                          Remove Template
+                        </button>
+                      </div>
+                    </div>
+                    
+                    {/* Exercise Plan Status */}
+                    <div style={{ marginBottom: '20px' }}>
+                      <h6 style={{ marginBottom: '10px' }}>Exercise Plan Status:</h6>
+                      {planData.exercisePlan && planData.exercisePlan.days && Array.isArray(planData.exercisePlan.days) && planData.exercisePlan.days.length > 0 ? (
+                        <div style={{ 
+                          backgroundColor: '#d4edda', 
+                          padding: '10px', 
+                          borderRadius: '6px',
+                          border: '1px solid #c3e6cb'
+                        }}>
+                          <p style={{ margin: '0', color: '#155724', fontSize: '14px' }}>
+                            ✅ Exercise plan created: {planData.exercisePlan.days.length} days with exercises
+                          </p>
+                        </div>
+                      ) : (
+                        <div style={{ 
+                          backgroundColor: '#f8d7da', 
+                          padding: '10px', 
+                          borderRadius: '6px',
+                          border: '1px solid #f5c6cb'
+                        }}>
+                          <p style={{ margin: '0', color: '#721c24', fontSize: '14px' }}>
+                            ❌ No exercise plan created yet. Apply a template or build manually.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* Exercise Plan Builder - Day Cards */}
+                    {planData.exercisePlan && planData.exercisePlan.days && Array.isArray(planData.exercisePlan.days) && planData.exercisePlan.days.length > 0 && (
+                      <div style={{ marginBottom: '30px' }}>
+                        <h5 style={{ marginBottom: '20px' }}>📋 Exercise Plan Details</h5>
+                        
+                        {/* Day Cards */}
+                        {planData.exercisePlan.days.map((day, dayIndex) => (
+                          <div key={dayIndex} style={{ 
+                            backgroundColor: '#f8f9fa', 
+                            border: '2px solid #dee2e6',
+                            borderRadius: '12px',
+                            padding: '20px',
+                            marginBottom: '20px',
+                            boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                          }}>
+                            {/* Day Header */}
+                            <div style={{ 
+                              display: 'flex', 
+                              justifyContent: 'space-between', 
+                              alignItems: 'center',
+                              marginBottom: '15px',
+                              paddingBottom: '10px',
+                              borderBottom: '2px solid #007bff'
+                            }}>
+                              <div>
+                                <h6 style={{ margin: '0', color: '#007bff', fontSize: '18px', fontWeight: 'bold' }}>
+                                  {day.dayName || `Day ${day.day}`}
+                                </h6>
+                                <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>
+                                  Focus: {day.focus}
+                                </p>
+                              </div>
+                              <div style={{ display: 'flex', gap: '10px' }}>
+                                <button
+                                  onClick={() => addExerciseToDay(dayIndex)}
+                                  style={{
+                                    padding: '8px 16px',
+                                    backgroundColor: '#28a745',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    fontSize: '12px'
+                                  }}
+                                >
+                                  + Add Exercise
+                                </button>
+                                {planData.exercisePlan.days.length > 1 && (
+                                  <button
+                                    onClick={() => removeDay(dayIndex)}
+                                    style={{
+                                      padding: '8px 16px',
+                                      backgroundColor: '#dc3545',
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '6px',
+                                      cursor: 'pointer',
+                                      fontSize: '12px'
+                                    }}
+                                  >
+                                    Remove Day
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            
+                            {/* Exercise Cards */}
+                            {day.exercises && day.exercises.length > 0 ? (
+                              <div style={{ display: 'grid', gap: '15px' }}>
+                                {day.exercises.map((exercise, exerciseIndex) => (
+                                  <div key={exerciseIndex} style={{ 
+                                    backgroundColor: 'white',
+                                    border: '1px solid #dee2e6',
+                                    borderRadius: '8px',
+                                    padding: '15px',
+                                    boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+                                  }}>
+                                    {/* Exercise Header */}
+                                    <div style={{ 
+                                      display: 'flex', 
+                                      justifyContent: 'space-between', 
+                                      alignItems: 'center',
+                                      marginBottom: '10px'
+                                    }}>
+                                      <h6 style={{ margin: '0', color: '#333', fontSize: '16px' }}>
+                                        {exercise.name}
+                                      </h6>
+                                      <div style={{ display: 'flex', gap: '8px' }}>
+                                        <button
+                                          onClick={() => toggleExerciseProgression(dayIndex, exerciseIndex)}
+                                          style={{
+                                            padding: '4px 8px',
+                                            backgroundColor: exercise.progressionEnabled ? '#28a745' : '#6c757d',
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '4px',
+                                            cursor: 'pointer',
+                                            fontSize: '10px'
+                                          }}
+                                        >
+                                          {exercise.progressionEnabled ? '✓ Progression' : 'Progression'}
+                                        </button>
+                                        <button
+                                          onClick={() => replaceExercise(dayIndex, exerciseIndex)}
+                                          style={{
+                                            padding: '4px 8px',
+                                            backgroundColor: '#17a2b8',
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '4px',
+                                            cursor: 'pointer',
+                                            fontSize: '10px'
+                                          }}
+                                        >
+                                          Replace
+                                        </button>
+                                        <button
+                                          onClick={() => removeExerciseFromDay(dayIndex, exerciseIndex)}
+                                          style={{
+                                            padding: '4px 8px',
+                                            backgroundColor: '#dc3545',
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '4px',
+                                            cursor: 'pointer',
+                                            fontSize: '10px'
+                                          }}
+                                        >
+                                          Remove
+                                        </button>
+                                      </div>
+                                    </div>
+                                    
+                                    {/* Exercise Details */}
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px' }}>
+                                      {/* Exercise Type */}
+                                      <div>
+                                        <label style={{ fontSize: '12px', color: '#666', marginBottom: '4px', display: 'block' }}>
+                                          Type:
+                                        </label>
+                                        <select
+                                          value={exercise.type || 'strength'}
+                                          onChange={(e) => updateExerciseAttributes(dayIndex, exerciseIndex, 'type', e.target.value)}
+                                          style={{
+                                            width: '100%',
+                                            padding: '6px',
+                                            border: '1px solid #ddd',
+                                            borderRadius: '4px',
+                                            fontSize: '12px'
+                                          }}
+                                        >
+                                          <option value="strength">Strength</option>
+                                          <option value="cardio">Cardio</option>
+                                          <option value="bodyweight">Bodyweight</option>
+                                          <option value="flexibility">Flexibility</option>
+                                        </select>
+                                      </div>
+                                      
+                                      {/* Sets */}
+                                      <div>
+                                        <label style={{ fontSize: '12px', color: '#666', marginBottom: '4px', display: 'block' }}>
+                                          Sets:
+                                        </label>
+                                        <input
+                                          type="number"
+                                          value={exercise.sets || 3}
+                                          onChange={(e) => updateExerciseAttributes(dayIndex, exerciseIndex, 'sets', parseInt(e.target.value))}
+                                          style={{
+                                            width: '100%',
+                                            padding: '6px',
+                                            border: '1px solid #ddd',
+                                            borderRadius: '4px',
+                                            fontSize: '12px'
+                                          }}
+                                          min="1"
+                                          max="10"
+                                        />
+                                      </div>
+                                      
+                                      {/* Reps */}
+                                      <div>
+                                        <label style={{ fontSize: '12px', color: '#666', marginBottom: '4px', display: 'block' }}>
+                                          Reps:
+                                        </label>
+                                        <input
+                                          type="number"
+                                          value={exercise.reps || 10}
+                                          onChange={(e) => updateExerciseAttributes(dayIndex, exerciseIndex, 'reps', parseInt(e.target.value))}
+                                          style={{
+                                            width: '100%',
+                                            padding: '6px',
+                                            border: '1px solid #ddd',
+                                            borderRadius: '4px',
+                                            fontSize: '12px'
+                                          }}
+                                          min="1"
+                                          max="50"
+                                        />
+                                      </div>
+                                      
+                                      {/* Duration */}
+                                      <div>
+                                        <label style={{ fontSize: '12px', color: '#666', marginBottom: '4px', display: 'block' }}>
+                                          Duration (sec):
+                                        </label>
+                                        <input
+                                          type="number"
+                                          value={exercise.duration || 0}
+                                          onChange={(e) => updateExerciseAttributes(dayIndex, exerciseIndex, 'duration', parseInt(e.target.value))}
+                                          style={{
+                                            width: '100%',
+                                            padding: '6px',
+                                            border: '1px solid #ddd',
+                                            borderRadius: '4px',
+                                            fontSize: '12px'
+                                          }}
+                                          min="0"
+                                          max="600"
+                                        />
+                                      </div>
+                                      
+                                      {/* Rest */}
+                                      <div>
+                                        <label style={{ fontSize: '12px', color: '#666', marginBottom: '4px', display: 'block' }}>
+                                          Rest (sec):
+                                        </label>
+                                        <input
+                                          type="number"
+                                          value={exercise.rest || 60}
+                                          onChange={(e) => updateExerciseAttributes(dayIndex, exerciseIndex, 'rest', parseInt(e.target.value))}
+                                          style={{
+                                            width: '100%',
+                                            padding: '6px',
+                                            border: '1px solid #ddd',
+                                            borderRadius: '4px',
+                                            fontSize: '12px'
+                                          }}
+                                          min="0"
+                                          max="300"
+                                        />
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div style={{ 
+                                textAlign: 'center', 
+                                padding: '20px', 
+                                color: '#666',
+                                backgroundColor: '#f8f9fa',
+                                borderRadius: '8px',
+                                border: '2px dashed #dee2e6'
+                              }}>
+                                <p style={{ margin: '0' }}>No exercises added yet. Click "Add Exercise" to get started.</p>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        
+                        {/* Add Day Button */}
+                        <div style={{ textAlign: 'center', marginTop: '20px' }}>
+                          <button
+                            onClick={addDay}
+                            style={{
+                              padding: '12px 24px',
+                              backgroundColor: '#17a2b8',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '8px',
+                              cursor: 'pointer',
+                              fontSize: '14px',
+                              fontWeight: 'bold'
+                            }}
+                          >
+                            + Add New Day
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Action Buttons */}
+                    <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
+                      <button
+                        onClick={generateProgressivePlan}
+                        style={{
+                          padding: '10px 20px',
+                          backgroundColor: '#007bff',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '14px'
+                        }}
+                      >
+                        Generate Progressive Plan
+                      </button>
+                      <button
+                        onClick={() => setShowExercisePreview(true)}
+                        style={{
+                          padding: '10px 20px',
+                          backgroundColor: '#ffc107',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '14px'
+                        }}
+                      >
+                        Preview Exercise Plan
+                      </button>
+                      <button
+                        onClick={() => setPlanData(prev => ({ ...prev, exercisePlan: { ...prev.exercisePlan, days: [] } }))}
+                        style={{
+                          padding: '10px 20px',
+                          backgroundColor: '#dc3545',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '14px'
+                        }}
+                      >
+                        Clear Exercise Plan
+                      </button>
+                    </div>
+                  </div>
+                )}
+            
+            {/* Progression Settings */}
+            {selectedExerciseTemplate && (
+              <div style={{ marginBottom: '30px' }}>
+                <h4>📈 Exercise Progression Settings</h4>
+                
+                <div style={{ 
+                  backgroundColor: '#fff3cd', 
+                  padding: '15px', 
+                  borderRadius: '8px',
+                  marginBottom: '15px',
+                  border: '1px solid #ffeaa7'
+                }}>
+                  <h5 style={{ margin: '0 0 10px 0', color: '#856404' }}>💪 Exercise Progression Overview ({selectedDuration} weeks)</h5>
+                  {(() => {
+                    // Calculate progression frequency based on goal
+                    const getExerciseProgressionFrequency = () => {
+                      switch (user.fitnessGoal) {
+                        case 'Fat Loss / Weight Reduction': return 2; // Every 2 weeks
+                        case 'Muscle Gain / Strength Building': return 1; // Every week (more aggressive for strength)
+                        case 'Body Recomposition (Lose fat & build muscle)': return 2; // Every 2 weeks
+                        case 'General Health & Wellness': return 3; // Every 3 weeks
+                        default: return 2;
+                      }
+                    };
+                    
+                    const progressionFrequency = getExerciseProgressionFrequency();
+                    const weeklyIncrements = planData.progressiveSettings.weeklyIncrements;
+                    
+                    // Calculate progression weeks
+                    const progressionWeeks = [];
+                    for (let week = 1; week <= selectedDuration; week++) {
+                      // Apply progression based on frequency
+                      const effectiveWeek = Math.floor((week - 1) / progressionFrequency) * progressionFrequency + 1;
+                      const weekIncrement = Math.floor((effectiveWeek - 1) / progressionFrequency);
+                      
+                      progressionWeeks.push({
+                        week,
+                        sets: weeklyIncrements.sets * weekIncrement,
+                        reps: weeklyIncrements.reps * weekIncrement,
+                        duration: weeklyIncrements.duration * weekIncrement,
+                        rest: weeklyIncrements.rest * weekIncrement,
+                        isProgressionWeek: (week - 1) % progressionFrequency === 0
+                      });
+                    }
+                    
+                    // Calculate total changes
+                    const startWeek = progressionWeeks[0];
+                    const endWeek = progressionWeeks[progressionWeeks.length - 1];
+                    const totalChanges = {
+                      sets: endWeek.sets - startWeek.sets,
+                      reps: endWeek.reps - startWeek.reps,
+                      duration: endWeek.duration - startWeek.duration,
+                      rest: endWeek.rest - startWeek.rest
+                    };
+                    
+                    return (
+                      <div>
+                        {/* Progression Summary */}
+                        <div style={{ 
+                          backgroundColor: '#e7f3ff', 
+                          padding: '10px', 
+                          borderRadius: '4px',
+                          marginBottom: '15px',
+                          border: '1px solid #b3d9ff'
+                        }}>
+                          <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '8px' }}>
+                            🎯 {user.fitnessGoal} - Exercise Progression Every {progressionFrequency} Week{progressionFrequency > 1 ? 's' : ''}
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', fontSize: '11px' }}>
+                            <div>
+                              <strong>Sets:</strong><br/>
+                              <span style={{ color: totalChanges.sets > 0 ? '#28a745' : totalChanges.sets < 0 ? '#dc3545' : '#6c757d' }}>
+                                {totalChanges.sets > 0 ? '+' : ''}{totalChanges.sets} total
+                              </span>
+                            </div>
+                            <div>
+                              <strong>Reps:</strong><br/>
+                              <span style={{ color: totalChanges.reps > 0 ? '#28a745' : totalChanges.reps < 0 ? '#dc3545' : '#6c757d' }}>
+                                {totalChanges.reps > 0 ? '+' : ''}{totalChanges.reps} total
+                              </span>
+                            </div>
+                            <div>
+                              <strong>Duration:</strong><br/>
+                              <span style={{ color: totalChanges.duration > 0 ? '#28a745' : totalChanges.duration < 0 ? '#dc3545' : '#6c757d' }}>
+                                {totalChanges.duration > 0 ? '+' : ''}{totalChanges.duration}s total
+                              </span>
+                            </div>
+                            <div>
+                              <strong>Rest:</strong><br/>
+                              <span style={{ color: totalChanges.rest > 0 ? '#28a745' : totalChanges.rest < 0 ? '#dc3545' : '#6c757d' }}>
+                                {totalChanges.rest > 0 ? '+' : ''}{totalChanges.rest}s total
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Weekly Breakdown */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+                          {progressionWeeks.map((week, index) => {
+                            const prevWeek = index > 0 ? progressionWeeks[index - 1] : null;
+                            const setsChange = prevWeek ? week.sets - prevWeek.sets : 0;
+                            const repsChange = prevWeek ? week.reps - prevWeek.reps : 0;
+                            
+                            return (
+                              <div key={index} style={{ 
+                                backgroundColor: week.isProgressionWeek ? '#d4edda' : 'white', 
+                                padding: '8px', 
+                                borderRadius: '4px',
+                                border: '2px solid',
+                                borderColor: week.isProgressionWeek ? '#28a745' : '#dee2e6',
+                                fontSize: '11px'
+                              }}>
+                                <div style={{ 
+                                  fontWeight: 'bold', 
+                                  marginBottom: '4px',
+                                  color: week.isProgressionWeek ? '#155724' : '#495057'
+                                }}>
+                                  Week {week.week}
+                                  {week.isProgressionWeek && <span style={{ marginLeft: '5px' }}>🔄</span>}
+                                </div>
+                                <div>Sets: {week.sets > 0 ? '+' : ''}{week.sets}
+                                  {setsChange !== 0 && (
+                                    <span style={{ 
+                                      color: setsChange > 0 ? '#28a745' : '#dc3545',
+                                      fontSize: '10px',
+                                      marginLeft: '5px'
+                                    }}>
+                                      ({setsChange > 0 ? '+' : ''}{setsChange})
+                                    </span>
+                                  )}
+                                </div>
+                                <div>Reps: {week.reps > 0 ? '+' : ''}{week.reps}
+                                  {repsChange !== 0 && (
+                                    <span style={{ 
+                                      color: repsChange > 0 ? '#28a745' : '#dc3545',
+                                      fontSize: '10px',
+                                      marginLeft: '5px'
+                                    }}>
+                                      ({repsChange > 0 ? '+' : ''}{repsChange})
+                                    </span>
+                                  )}
+                                </div>
+                                <div>Duration: {week.duration > 0 ? '+' : ''}{week.duration}s</div>
+                                <div>Rest: {week.rest > 0 ? '+' : ''}{week.rest}s</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+                
+                {/* Progression Controls */}
+                <div style={{ 
+                  backgroundColor: '#f8f9fa', 
+                  padding: '15px', 
+                  borderRadius: '8px',
+                  border: '1px solid #dee2e6'
+                }}>
+                  <h6 style={{ margin: '0 0 15px 0', color: '#495057' }}>Progressive Settings</h6>
+                  
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px', marginBottom: '15px' }}>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px', fontWeight: 'bold' }}>
+                        Progressive Weeks:
+                      </label>
+                      <input
+                        type="number"
+                        value={progressiveWeeks}
+                        onChange={(e) => {
+                          const newValue = parseInt(e.target.value) || 4;
+                          const maxWeeks = selectedDuration;
+                          setProgressiveWeeks(Math.min(newValue, maxWeeks));
+                        }}
+                        min="1"
+                        max={selectedDuration}
+                        style={{
+                          padding: '8px 12px',
+                          border: '1px solid #ddd',
+                          borderRadius: '4px',
+                          width: '100%',
+                          fontSize: '14px'
+                        }}
+                      />
+                      <small style={{ color: '#666', fontSize: '12px' }}>
+                        Max: {selectedDuration} weeks (plan duration)
+                      </small>
+                    </div>
+                    
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px', fontWeight: 'bold' }}>
+                        Progression Type:
+                      </label>
+                      <select
+                        value={planData.progressiveSettings.progressionType}
+                        onChange={(e) => setPlanData(prev => ({
+                          ...prev,
+                          progressiveSettings: {
+                            ...prev.progressiveSettings,
+                            progressionType: e.target.value
+                          }
+                        }))}
+                        style={{
+                          padding: '8px 12px',
+                          border: '1px solid #ddd',
+                          borderRadius: '4px',
+                          width: '100%',
+                          fontSize: '14px'
+                        }}
+                      >
+                        <option value="automatic">Automatic (Smart Defaults)</option>
+                        <option value="manual">Manual Control</option>
+                  </select>
+                </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {/* Exercise Plan Preview Button */}
+            {selectedExerciseTemplate && planData.exercisePlan.days.length > 0 && (
+              <div style={{ marginBottom: '30px' }}>
+                <button
+                  onClick={() => setShowExercisePreview(true)}
+                  style={{
+                    padding: '15px 30px',
+                    backgroundColor: '#17a2b8',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '16px',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  👁️ Preview Exercise Plan
+                </button>
+              </div>
+            )}
+            
+            {/* Custom Exercise Template Creation Modal */}
+            {showCustomExerciseCreation && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 1000
+          }}>
+            <div style={{
+              backgroundColor: 'white',
+              padding: '30px',
+              borderRadius: '10px',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              overflow: 'auto',
+              width: '800px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h3>Create Custom Exercise Template</h3>
+                <button
+                  onClick={() => setShowCustomExerciseCreation(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '24px',
+                    cursor: 'pointer',
+                    color: '#666'
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+                  Template Name:
+                </label>
+                <input
+                  type="text"
+                  placeholder="Enter template name"
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                border: '1px solid #ddd', 
+                    borderRadius: '4px',
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+              
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+                  Days per Week: {selectedExerciseDays || getRecommendedExerciseDays()} days
+                </label>
+              </div>
+              
+              <div style={{ marginBottom: '20px' }}>
+                <p style={{ color: '#666', fontSize: '14px' }}>
+                  Custom exercise template creation will be implemented in the next phase.
+                  For now, please use the pre-built templates.
+                </p>
+              </div>
+              
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => setShowCustomExerciseCreation(false)}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#6c757d',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    setShowCustomExerciseCreation(false);
+                    // TODO: Implement custom template creation
+                  }}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#28a745',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Create Template
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Custom Meal Template Creation Modal */}
+        {showCustomMealCreation && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 1000
+          }}>
+            <div style={{
+              backgroundColor: 'white',
+              padding: '30px',
+              borderRadius: '10px',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              overflow: 'auto',
+              width: '800px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h3>Create Custom Meal Template</h3>
+                <button
+                  onClick={() => setShowCustomMealCreation(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '24px',
+                    cursor: 'pointer',
+                    color: '#666'
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+                  Template Name:
+                </label>
+                <input
+                  type="text"
+                  placeholder="Enter template name"
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+              
+              <div style={{ marginBottom: '20px' }}>
+                <p style={{ color: '#666', fontSize: '14px' }}>
+                  Custom meal template creation will be implemented in the next phase.
+                  For now, please use the pre-built templates.
+                </p>
+              </div>
+              
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => setShowCustomMealCreation(false)}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#6c757d',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    setShowCustomMealCreation(false);
+                    // TODO: Implement custom template creation
+                  }}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#28a745',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Create Template
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Template Selection Modal */}
+        {showTemplateSelection && (
+              <div style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                zIndex: 1000,
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center'
+              }}>
+                <div style={{
+                  backgroundColor: 'white',
+                  padding: '30px',
+                  borderRadius: '12px',
+                  maxWidth: '800px',
+                  maxHeight: '80vh',
+                  overflow: 'auto',
+                  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.3)'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h3 style={{ margin: 0 }}>
+                      {templateSelectionType === 'exercise' ? 'Select Exercise Template' : 'Select Meal Template'}
+                    </h3>
+                    <button
+                      onClick={() => setShowTemplateSelection(false)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        fontSize: '24px',
+                        cursor: 'pointer',
+                        color: '#666'
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  
+                  {/* Exercise Templates Only */}
+                  {templateSelectionType === 'exercise' && (
+                    <div>
+                      <h4>💪 Exercise Templates</h4>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '15px' }}>
+                        {Object.entries(exerciseTemplates).map(([key, template]) => (
+                          <div
+                            key={key}
+                            onClick={() => {
+                              setSelectedExerciseTemplate(template);
+                              setShowTemplateSelection(false);
+                            }}
+                            style={{
+                              border: '2px solid #e9ecef',
+                borderRadius: '8px', 
+                padding: '15px', 
+                              cursor: 'pointer',
+                              transition: 'all 0.2s',
+                              backgroundColor: selectedExerciseTemplate?.id === template.id ? '#e8f5e8' : 'white'
+                            }}
+                            onMouseEnter={(e) => e.target.style.borderColor = '#007bff'}
+                            onMouseLeave={(e) => e.target.style.borderColor = '#e9ecef'}
+                          >
+                            <h5 style={{ margin: '0 0 10px 0', color: '#333' }}>{template.name}</h5>
+                            <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#666' }}>
+                              <strong>Level:</strong> {template.level}
+                            </p>
+                            <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#666' }}>
+                              <strong>Focus:</strong> {template.focus}
+                            </p>
+                            <p style={{ margin: '0', fontSize: '12px', color: '#888' }}>
+                              {template.description}
+                            </p>
+              </div>
+            ))}
+                      </div>
+          </div>
+        )}
+
+                  {/* Meal Templates Only */}
+                  {templateSelectionType === 'meal' && (
+                    <div>
+                      <h4>🍽️ Meal Templates</h4>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '15px' }}>
+                        {Object.entries(mealTemplates).map(([key, template]) => (
+                          <div
+                            key={key}
+                            onClick={() => {
+                              setSelectedMealTemplate(template);
+                              setShowTemplateSelection(false);
+                            }}
+                            style={{
+                              border: '2px solid #e9ecef',
+                              borderRadius: '8px',
+                              padding: '15px',
+                              cursor: 'pointer',
+                              transition: 'all 0.2s',
+                              backgroundColor: selectedMealTemplate?.id === template.id ? '#e8f5e8' : 'white'
+                            }}
+                            onMouseEnter={(e) => e.target.style.borderColor = '#007bff'}
+                            onMouseLeave={(e) => e.target.style.borderColor = '#e9ecef'}
+                          >
+                            <h5 style={{ margin: '0 0 10px 0', color: '#333' }}>{template.name}</h5>
+                            <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#666' }}>
+                              <strong>Calories:</strong> {template.totalCalories} kcal
+                            </p>
+                            <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#666' }}>
+                              <strong>Protein:</strong> {template.totalProtein}g
+                            </p>
+                            <p style={{ margin: '0', fontSize: '12px', color: '#888' }}>
+                              {template.description}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            
+
+            
+
+            
+            {/* Template Preview */}
+            {selectedExerciseTemplate && (
+              <div style={{ 
+                backgroundColor: '#e7f3ff', 
+                padding: '20px', 
+                borderRadius: '8px',
+                border: '1px solid #b3d9ff',
+                marginBottom: '30px'
+              }}>
+                <h4 style={{ marginBottom: '15px' }}>📋 Template Preview</h4>
+                
+                {selectedExerciseTemplate && (
+                  <div style={{ marginBottom: '20px' }}>
+                    <h5 style={{ color: '#007bff', marginBottom: '10px' }}>
+                      💪 Exercise Template: {selectedExerciseTemplate.name}
+                    </h5>
+                    <p style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#666' }}>
+                      Duration: {selectedDuration} weeks | Days: {selectedExerciseDays || getRecommendedExerciseDays()} days/week | Focus: {selectedExerciseTemplate.focus || 'General Fitness'}
+                    </p>
+                    <div style={{ fontSize: '13px', color: '#666' }}>
+                      <strong>Template Features:</strong>
+                      <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
+                        <li>Multiple exercise variations per day</li>
+                        <li>Progressive overload structure</li>
+                        <li>Rest and recovery optimization</li>
+                        <li>Customizable sets, reps, and weights</li>
+                      </ul>
+                    </div>
+                  </div>
+                )}
+                
+
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 3: Meal Plan Building */}
+        {currentStep === 3 && (
+          <div>
+            <h3>Step 3: Meal Plan Building</h3>
+            <p>Build the complete meal plan for the user.</p>
+            
+            {/* Plan Overview */}
+            <div style={{ 
+              backgroundColor: '#f8f9fa', 
+              padding: '20px', 
+              borderRadius: '8px',
+              border: '1px solid #dee2e6',
+              marginBottom: '30px'
+            }}>
+              <h4 style={{ marginBottom: '15px' }}>📋 Plan Overview</h4>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                {/* Exercise Template Status */}
+                <div>
+                  <h5 style={{ color: '#007bff', marginBottom: '10px' }}>💪 Exercise Plan</h5>
+                  {selectedExerciseTemplate ? (
+                    <div>
+                      <p style={{ margin: '0 0 5px 0', fontWeight: 'bold', color: '#28a745' }}>
+                        ✅ {selectedExerciseTemplate.name}
+                      </p>
+                      <p style={{ margin: '0', fontSize: '14px', color: '#666' }}>
+                        {selectedExerciseDays || getRecommendedExerciseDays()} days/week | {selectedDuration} weeks
+                      </p>
+                    </div>
+                  ) : (
+                    <p style={{ margin: '0', color: '#dc3545', fontSize: '14px' }}>
+                      ❌ No exercise template selected
+                    </p>
+                  )}
+                </div>
+                
+                {/* Meal Template Status */}
+                <div>
+                  <h5 style={{ color: '#28a745', marginBottom: '10px' }}>🍽️ Meal Plan</h5>
+                  {selectedMealTemplate ? (
+                    <div>
+                      <p style={{ margin: '0 0 5px 0', fontWeight: 'bold', color: '#28a745' }}>
+                        ✅ {selectedMealTemplate.name}
+                      </p>
+                      <p style={{ margin: '0', fontSize: '14px', color: '#666' }}>
+                        {selectedMealTemplate.mealsPerDay || 3} meals/day | {selectedDuration} weeks
+                      </p>
+                    </div>
+                  ) : (
+                    <p style={{ margin: '0', color: '#dc3545', fontSize: '14px' }}>
+                      ❌ No meal template selected
+                    </p>
+                  )}
+                </div>
+              </div>
+              
+              {/* Progression Settings */}
+              <div style={{ 
+                backgroundColor: '#e7f3ff', 
+                padding: '15px', 
+                borderRadius: '6px',
+                marginTop: '15px',
+                border: '1px solid #b3d9ff'
+              }}>
+                <h6 style={{ margin: '0 0 10px 0', color: '#0056b3' }}>📈 Progression Settings</h6>
+                <div style={{ fontSize: '13px', color: '#666' }}>
+                  <p style={{ margin: '0 0 5px 0' }}>
+                    <strong>Duration:</strong> {selectedDuration} weeks | 
+                    <strong>Exercise Progression:</strong> Every {(() => {
+                      switch (user?.fitnessGoal) {
+                        case 'Muscle Gain / Strength Building': return '1 week';
+                        case 'Fat Loss / Weight Reduction': return '2 weeks';
+                        case 'Body Recomposition (Lose fat & build muscle)': return '2 weeks';
+                        default: return '3 weeks';
+                      }
+                    })()}
+                  </p>
+                  <p style={{ margin: '0' }}>
+                    <strong>Meal Progression:</strong> Weekly calorie and macro adjustments based on goal
+                  </p>
+                </div>
+              </div>
+            </div>
+            
+            {/* Exercise Plan Builder */}
+            <div style={{ marginBottom: '30px' }}>
+              <h4>💪 Exercise Plan Builder</h4>
+              
+              {/* Template Application */}
+              {selectedExerciseTemplate && (
+                <div style={{ 
+                  backgroundColor: '#d4edda', 
+                  padding: '15px', 
+                  borderRadius: '8px',
+                  marginBottom: '20px',
+                  border: '1px solid #c3e6cb'
+                }}>
+                  <h5 style={{ margin: '0 0 10px 0', color: '#155724' }}>🎯 Template-Based Plan</h5>
+                  <p style={{ margin: '0 0 10px 0', fontSize: '14px' }}>
+                    <strong>{selectedExerciseTemplate.name}</strong> will be applied with {selectedExerciseDays || getRecommendedExerciseDays()} days per week.
+                  </p>
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <button
+                      onClick={() => {
+                        // Apply exercise template to plan
+                        if (selectedExerciseTemplate && selectedExerciseTemplate.dayOptions) {
+                          const selectedDays = selectedExerciseDays || getRecommendedExerciseDays();
+                          const dayOption = selectedExerciseTemplate.dayOptions[selectedDays] || selectedExerciseTemplate.dayOptions[3];
+                          
+                          if (dayOption && Array.isArray(dayOption)) {
+                            // Initialize plan with template
+                            setPlanData(prev => ({
+                              ...prev,
+                              exercisePlan: {
+                                ...prev.exercisePlan,
+                                days: dayOption.map((day, index) => ({
+                                  day: index + 1,
+                                  dayName: day.dayName || `Day ${index + 1}`,
+                                  focus: day.focus || 'General Fitness',
+                                  exercises: day.exercises.map(exercise => ({
+                                    ...exercise,
+                                    progressionEnabled: true,
+                                    progressionSettings: getExerciseProgressionDefaults(exercise.type, planData.goalType)
+                                  })) || []
+                                }))
+                              }
+                            }));
+                          } else {
+                            alert(`Template structure not found for ${selectedDays} days. Available options: ${Object.keys(selectedExerciseTemplate.dayOptions).join(', ')}`);
+                          }
+                        } else {
+                          alert('Template not available. Please select a different template.');
+                        }
+                      }}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#28a745',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '14px'
+                      }}
+                    >
+                      Apply Template to Plan
+                    </button>
+                    <button
+                      onClick={() => setSelectedExerciseTemplate(null)}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#6c757d',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '14px'
+                      }}
+                    >
+                      Remove Template
+                    </button>
+                  </div>
+                </div>
+              )}
+              
+              {/* Manual Exercise Builder */}
+              <div style={{ 
+                backgroundColor: '#f8f9fa', 
+                padding: '20px', 
+                borderRadius: '8px',
+                border: '1px solid #dee2e6'
+              }}>
+                <h5 style={{ marginBottom: '15px' }}>🏋️ Build Exercise Plan</h5>
+                
+                {/* Day Selection */}
+                <div style={{ marginBottom: '20px' }}>
+                  <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+                    Number of Training Days: {selectedExerciseDays || getRecommendedExerciseDays()} days/week
+                  </label>
+                </div>
+                
+                {/* Exercise Plan Status */}
+                <div style={{ marginBottom: '20px' }}>
+                  <h6 style={{ marginBottom: '10px' }}>Exercise Plan Status:</h6>
+                  {planData.exercisePlan && planData.exercisePlan.days && Array.isArray(planData.exercisePlan.days) && planData.exercisePlan.days.length > 0 ? (
+                    <div style={{ 
+                      backgroundColor: '#d4edda', 
+                      padding: '10px', 
+                      borderRadius: '6px',
+                      border: '1px solid #c3e6cb'
+                    }}>
+                      <p style={{ margin: '0', color: '#155724', fontSize: '14px' }}>
+                        ✅ Exercise plan created: {planData.exercisePlan.days.length} days with exercises
+                      </p>
+                    </div>
+                  ) : (
+                    <div style={{ 
+                      backgroundColor: '#f8d7da', 
+                      padding: '10px', 
+                      borderRadius: '6px',
+                      border: '1px solid #f5c6cb'
+                    }}>
+                      <p style={{ margin: '0', color: '#721c24', fontSize: '14px' }}>
+                        ❌ No exercise plan created yet. Apply a template or build manually.
+                      </p>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Quick Actions */}
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => {
+                      // Generate progressive plan
+                      generateProgressivePlan();
+                    }}
+                    style={{
+                      padding: '10px 20px',
+                      backgroundColor: '#007bff',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '14px'
+                    }}
+                  >
+                    Generate Progressive Plan
+                  </button>
+                  <button
+                    onClick={() => {
+                      // Clear exercise plan
+                      setPlanData(prev => ({
+                        ...prev,
+                        exercisePlan: {
+                          ...prev.exercisePlan,
+                          days: []
+                        }
+                      }));
+                    }}
+                    style={{
+                      padding: '10px 20px',
+                      backgroundColor: '#dc3545',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '14px'
+                    }}
+                  >
+                    Clear Exercise Plan
+                  </button>
+                </div>
+              </div>
+            </div>
+            
+            {/* Meal Plan Builder */}
+            <div style={{ marginBottom: '30px' }}>
+              <h4>🍽️ Meal Plan Builder</h4>
+              
+              {/* Template Application */}
+              {selectedMealTemplate && (
+                <div style={{ 
+                  backgroundColor: '#d4edda', 
+                  padding: '15px', 
+                  borderRadius: '8px',
+                  marginBottom: '20px',
+                  border: '1px solid #c3e6cb'
+                }}>
+                  <h5 style={{ margin: '0 0 10px 0', color: '#155724' }}>🎯 Template-Based Meal Plan</h5>
+                  <p style={{ margin: '0 0 10px 0', fontSize: '14px' }}>
+                    <strong>{selectedMealTemplate.name}</strong> will be applied with {selectedMealTemplate.mealsPerDay || 3} meals per day.
+                  </p>
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <button
+                      onClick={() => {
+                        // Apply meal template to plan
+                        if (selectedMealTemplate && selectedMealTemplate.mealOptions) {
+                          // Initialize meal plan with template
+                          setPlanData(prev => ({
+                            ...prev,
+                            mealPlan: {
+                              ...prev.mealPlan,
+                              meals: selectedMealTemplate.mealOptions || []
+                            }
+                          }));
+                        } else {
+                          alert('Meal template structure not found. Please try a different template.');
+                        }
+                      }}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#28a745',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '14px'
+                      }}
+                    >
+                      Apply Template to Plan
+                    </button>
+                    <button
+                      onClick={() => setSelectedMealTemplate(null)}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#6c757d',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '14px'
+                      }}
+                    >
+                      Remove Template
+                    </button>
+                  </div>
+                </div>
+              )}
+              
+              {/* Manual Meal Builder */}
+              <div style={{ 
+                backgroundColor: '#f8f9fa', 
+                padding: '20px', 
+                borderRadius: '8px',
+                border: '1px solid #dee2e6'
+              }}>
+                <h5 style={{ marginBottom: '15px' }}>🥗 Build Meal Plan</h5>
+                
+                {/* Meal Plan Status */}
+                <div style={{ marginBottom: '20px' }}>
+                  <h6 style={{ marginBottom: '10px' }}>Meal Plan Status:</h6>
+                  {planData.mealPlan && planData.mealPlan.meals && Array.isArray(planData.mealPlan.meals) && planData.mealPlan.meals.length > 0 ? (
+                    <div style={{ 
+                      backgroundColor: '#d4edda', 
+                      padding: '10px', 
+                      borderRadius: '6px',
+                      border: '1px solid #c3e6cb'
+                    }}>
+                      <p style={{ margin: '0', color: '#155724', fontSize: '14px' }}>
+                        ✅ Meal plan created: {planData.mealPlan.meals.length} meals with foods
+                      </p>
+                    </div>
+                  ) : (
+                    <div style={{ 
+                      backgroundColor: '#f8d7da', 
+                      padding: '10px', 
+                      borderRadius: '6px',
+                      border: '1px solid #f5c6cb'
+                    }}>
+                      <p style={{ margin: '0', color: '#721c24', fontSize: '14px' }}>
+                        ❌ No meal plan created yet. Apply a template or build manually.
+                      </p>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Quick Actions */}
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => {
+                      // Generate progressive meal plan
+                      generateProgressiveMealPlan();
+                    }}
+                    style={{
+                      padding: '10px 20px',
+                      backgroundColor: '#28a745',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '14px'
+                    }}
+                  >
+                    Generate Progressive Meal Plan
+                  </button>
+                  <button
+                    onClick={() => {
+                      // Clear meal plan
+                      setPlanData(prev => ({
+                        ...prev,
+                        mealPlan: {
+                          ...prev.mealPlan,
+                          meals: []
+                        }
+                      }));
+                    }}
+                    style={{
+                      padding: '10px 20px',
+                      backgroundColor: '#dc3545',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '14px'
+                    }}
+                  >
+                    Clear Meal Plan
+                  </button>
+                </div>
+              </div>
+            </div>
+            
+            {/* Progressive Settings */}
+            <div style={{ marginBottom: '20px' }}>
+              <h4>Progressive Settings</h4>
+              
+              {/* Template-based progression info */}
+              <div style={{ 
+                backgroundColor: '#e7f3ff', 
+                padding: '15px', 
+                borderRadius: '8px',
+                marginBottom: '15px',
+                border: '1px solid #b3d9ff'
+              }}>
+                <h5 style={{ margin: '0 0 10px 0', color: '#0056b3' }}>📋 Template-Based Progression</h5>
+                <p style={{ margin: '0 0 8px 0', fontSize: '14px' }}>
+                  <strong>Plan Duration:</strong> {planData.duration} weeks (based on user's goal)
+                </p>
+                <p style={{ margin: '0 0 8px 0', fontSize: '14px' }}>
+                  <strong>Exercise Progression:</strong> 
+                  Sets: {planData.progressiveSettings.weeklyIncrements.sets > 0 ? '+' : ''}{planData.progressiveSettings.weeklyIncrements.sets}/week, 
+                  Reps: +{planData.progressiveSettings.weeklyIncrements.reps}/week, 
+                  Duration: +{planData.progressiveSettings.weeklyIncrements.duration}s/week, 
+                  Rest: {planData.progressiveSettings.weeklyIncrements.rest > 0 ? '+' : ''}{planData.progressiveSettings.weeklyIncrements.rest}s/week
+                </p>
+                <p style={{ margin: '0', fontSize: '14px' }}>
+                  <strong>Meal Progression:</strong> 
+                  Calories: {planData.progressiveSettings.mealProgression.calorieIncrement > 0 ? '+' : ''}{planData.progressiveSettings.mealProgression.calorieIncrement}/week, 
+                  Protein: +{planData.progressiveSettings.mealProgression.proteinIncrement}g/week, 
+                  Carbs: {planData.progressiveSettings.mealProgression.carbIncrement > 0 ? '+' : ''}{planData.progressiveSettings.mealProgression.carbIncrement}g/week, 
+                  Fats: {planData.progressiveSettings.mealProgression.fatIncrement > 0 ? '+' : ''}{planData.progressiveSettings.mealProgression.fatIncrement}g/week
+                </p>
+              </div>
+              
+              {/* Exercise Progression Overview */}
+              <div style={{ 
+                backgroundColor: '#fff3cd', 
+                padding: '15px', 
+                borderRadius: '8px',
+                marginBottom: '15px',
+                border: '1px solid #ffeaa7'
+              }}>
+                <h5 style={{ margin: '0 0 10px 0', color: '#856404' }}>💪 Exercise Progression Overview ({selectedDuration} weeks)</h5>
+                {(() => {
+                  // Calculate progression frequency based on goal
+                  const getExerciseProgressionFrequency = () => {
+                    switch (user.fitnessGoal) {
+                      case 'Fat Loss / Weight Reduction': return 2; // Every 2 weeks
+                      case 'Muscle Gain / Strength Building': return 1; // Every week (more aggressive for strength)
+                      case 'Body Recomposition (Lose fat & build muscle)': return 2; // Every 2 weeks
+                      case 'General Health & Wellness': return 3; // Every 3 weeks
+                      default: return 2;
+                    }
+                  };
+                  
+                  const progressionFrequency = getExerciseProgressionFrequency();
+                  const weeklyIncrements = planData.progressiveSettings.weeklyIncrements;
+                  
+                  // Calculate progression weeks
+                  const progressionWeeks = [];
+                  for (let week = 1; week <= selectedDuration; week++) {
+                    // Apply progression based on frequency
+                    const effectiveWeek = Math.floor((week - 1) / progressionFrequency) * progressionFrequency + 1;
+                    const weekIncrement = Math.floor((effectiveWeek - 1) / progressionFrequency);
+                    
+                    progressionWeeks.push({
+                      week,
+                      sets: weeklyIncrements.sets * weekIncrement,
+                      reps: weeklyIncrements.reps * weekIncrement,
+                      duration: weeklyIncrements.duration * weekIncrement,
+                      rest: weeklyIncrements.rest * weekIncrement,
+                      isProgressionWeek: (week - 1) % progressionFrequency === 0
+                    });
+                  }
+                  
+                  // Calculate total changes
+                  const startWeek = progressionWeeks[0];
+                  const endWeek = progressionWeeks[progressionWeeks.length - 1];
+                  const totalChanges = {
+                    sets: endWeek.sets - startWeek.sets,
+                    reps: endWeek.reps - startWeek.reps,
+                    duration: endWeek.duration - startWeek.duration,
+                    rest: endWeek.rest - startWeek.rest
+                  };
+                  
+                  return (
+                    <div>
+                      {/* Progression Summary */}
+                      <div style={{ 
+                        backgroundColor: '#e7f3ff', 
+                        padding: '10px', 
+                        borderRadius: '4px',
+                        marginBottom: '15px',
+                        border: '1px solid #b3d9ff'
+                      }}>
+                        <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '8px' }}>
+                          🎯 {user.fitnessGoal} - Exercise Progression Every {progressionFrequency} Week{progressionFrequency > 1 ? 's' : ''}
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', fontSize: '11px' }}>
+                          <div>
+                            <strong>Sets:</strong><br/>
+                            <span style={{ color: totalChanges.sets > 0 ? '#28a745' : totalChanges.sets < 0 ? '#dc3545' : '#6c757d' }}>
+                              {totalChanges.sets > 0 ? '+' : ''}{totalChanges.sets} total
+                            </span>
+                          </div>
+                          <div>
+                            <strong>Reps:</strong><br/>
+                            <span style={{ color: totalChanges.reps > 0 ? '#28a745' : totalChanges.reps < 0 ? '#dc3545' : '#6c757d' }}>
+                              {totalChanges.reps > 0 ? '+' : ''}{totalChanges.reps} total
+                            </span>
+                          </div>
+                          <div>
+                            <strong>Duration:</strong><br/>
+                            <span style={{ color: totalChanges.duration > 0 ? '#28a745' : totalChanges.duration < 0 ? '#dc3545' : '#6c757d' }}>
+                              {totalChanges.duration > 0 ? '+' : ''}{totalChanges.duration}s total
+                            </span>
+                          </div>
+                          <div>
+                            <strong>Rest:</strong><br/>
+                            <span style={{ color: totalChanges.rest > 0 ? '#28a745' : totalChanges.rest < 0 ? '#dc3545' : '#6c757d' }}>
+                              {totalChanges.rest > 0 ? '+' : ''}{totalChanges.rest}s total
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Weekly Breakdown */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+                        {progressionWeeks.map((week, index) => {
+                          const prevWeek = index > 0 ? progressionWeeks[index - 1] : null;
+                          const setsChange = prevWeek ? week.sets - prevWeek.sets : 0;
+                          const repsChange = prevWeek ? week.reps - prevWeek.reps : 0;
+                          
+                          return (
+                            <div key={index} style={{ 
+                              backgroundColor: week.isProgressionWeek ? '#d4edda' : 'white', 
+                              padding: '8px', 
+                              borderRadius: '4px',
+                              border: '2px solid',
+                              borderColor: week.isProgressionWeek ? '#28a745' : '#dee2e6',
+                              fontSize: '11px'
+                            }}>
+                              <div style={{ 
+                                fontWeight: 'bold', 
+                                marginBottom: '4px',
+                                color: week.isProgressionWeek ? '#155724' : '#495057'
+                              }}>
+                                Week {week.week}
+                                {week.isProgressionWeek && <span style={{ marginLeft: '5px' }}>🔄</span>}
+                              </div>
+                              <div>Sets: {week.sets > 0 ? '+' : ''}{week.sets}
+                                {setsChange !== 0 && (
+                                  <span style={{ 
+                                    color: setsChange > 0 ? '#28a745' : '#dc3545',
+                                    fontSize: '10px',
+                                    marginLeft: '5px'
+                                  }}>
+                                    ({setsChange > 0 ? '+' : ''}{setsChange})
+                                  </span>
+                                )}
+                              </div>
+                              <div>Reps: {week.reps > 0 ? '+' : ''}{week.reps}
+                                {repsChange !== 0 && (
+                                  <span style={{ 
+                                    color: repsChange > 0 ? '#28a745' : '#dc3545',
+                                    fontSize: '10px',
+                                    marginLeft: '5px'
+                                  }}>
+                                    ({repsChange > 0 ? '+' : ''}{repsChange})
+                                  </span>
+                                )}
+                              </div>
+                              <div>Duration: {week.duration > 0 ? '+' : ''}{week.duration}s</div>
+                              <div>Rest: {week.rest > 0 ? '+' : ''}{week.rest}s</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+              
+              <div style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Progressive Weeks:</label>
+                  <input
+                    type="number"
+                    value={progressiveWeeks}
+                    onChange={(e) => {
+                      const newValue = parseInt(e.target.value) || 4;
+                      const maxWeeks = selectedDuration;
+                      setProgressiveWeeks(Math.min(newValue, maxWeeks));
+                    }}
+                    min="1"
+                    max={selectedDuration}
+                    style={{
+                      padding: '8px 12px',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      fontSize: '14px'
+                    }}
+                  />
+                  <small style={{ color: '#666', fontSize: '12px' }}>
+                    Max: {selectedDuration} weeks (plan duration)
+                  </small>
+                </div>
+                
+                <div>
+                  <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Progression Type:</label>
+                  <select
+                    value={planData.progressiveSettings.progressionType}
+                    onChange={(e) => setPlanData(prev => ({
+                        ...prev,
+                      progressiveSettings: {
+                        ...prev.progressiveSettings,
+                        progressionType: e.target.value
+                      }
+                    }))}
+                    style={{
+                      padding: '8px 12px',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      fontSize: '14px'
+                    }}
+                  >
+                    <option value="automatic">Automatic (Smart Defaults)</option>
+                    <option value="manual">Manual (Custom)</option>
+                  </select>
+                </div>
+              </div>
+              
+              {planData.progressiveSettings.progressionType === 'manual' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px', marginBottom: '15px' }}>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Sets per Week:</label>
+                    <input
+                      type="number"
+                      value={planData.progressiveSettings.weeklyIncrements.sets}
+                      onChange={(e) => setPlanData(prev => ({
+                        ...prev,
+                        progressiveSettings: {
+                          ...prev.progressiveSettings,
+                          weeklyIncrements: {
+                            ...prev.progressiveSettings.weeklyIncrements,
+                            sets: parseInt(e.target.value) || 0
+                          }
+                        }
+                      }))}
+                      style={{
+                        width: '100%',
+                        padding: '8px',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px'
+                      }}
+                    />
+          </div>
+
+          <div>
+                    <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Reps per Week:</label>
+                    <input
+                      type="number"
+                      value={planData.progressiveSettings.weeklyIncrements.reps}
+                      onChange={(e) => setPlanData(prev => ({
+                        ...prev,
+                        progressiveSettings: {
+                          ...prev.progressiveSettings,
+                          weeklyIncrements: {
+                            ...prev.progressiveSettings.weeklyIncrements,
+                            reps: parseInt(e.target.value) || 0
+                          }
+                        }
+                      }))}
+                      style={{
+                        width: '100%',
+                        padding: '8px',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px'
+                      }}
+                    />
+                  </div>
+                  
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Duration (sec) per Week:</label>
+                    <input
+                      type="number"
+                      value={planData.progressiveSettings.weeklyIncrements.duration}
+                      onChange={(e) => setPlanData(prev => ({
+                        ...prev,
+                        progressiveSettings: {
+                          ...prev.progressiveSettings,
+                          weeklyIncrements: {
+                            ...prev.progressiveSettings.weeklyIncrements,
+                            duration: parseInt(e.target.value) || 0
+                          }
+                        }
+                      }))}
+                      style={{
+                        width: '100%',
+                        padding: '8px',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px'
+                      }}
+                    />
+                  </div>
+                  
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Rest (sec) per Week:</label>
+                    <input
+                      type="number"
+                      value={planData.progressiveSettings.weeklyIncrements.rest}
+                      onChange={(e) => setPlanData(prev => ({
+                        ...prev,
+                        progressiveSettings: {
+                          ...prev.progressiveSettings,
+                          weeklyIncrements: {
+                            ...prev.progressiveSettings.weeklyIncrements,
+                            rest: parseInt(e.target.value) || 0
+                          }
+                        }
+                      }))}
+                      style={{
+                        width: '100%',
+                        padding: '8px',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px'
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+              
+              <div style={{ 
+                backgroundColor: '#e3f2fd', 
+                padding: '15px', 
+                borderRadius: '8px',
+                marginBottom: '20px'
+              }}>
+                <h5>Current Exercise Settings (Based on {user?.fitnessGoal})</h5>
+                <p><strong>Sets:</strong> {planData.progressiveSettings.weeklyIncrements.sets > 0 ? '+' : ''}{planData.progressiveSettings.weeklyIncrements.sets} per week</p>
+                <p><strong>Reps:</strong> +{planData.progressiveSettings.weeklyIncrements.reps} per week</p>
+                <p><strong>Duration:</strong> +{planData.progressiveSettings.weeklyIncrements.duration} seconds per week</p>
+                <p><strong>Rest:</strong> {planData.progressiveSettings.weeklyIncrements.rest > 0 ? '+' : ''}{planData.progressiveSettings.weeklyIncrements.rest} seconds per week</p>
+              </div>
+            </div>
+            
+            {/* Bulk Progression Control */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={enableAllProgression}
+                  onChange={toggleAllExerciseProgression}
+                  style={{ transform: 'scale(1.2)' }}
+                />
+                <span style={{ fontWeight: 'bold' }}>Enable progression for all exercises</span>
+              </label>
+            </div>
+            
+            {/* Exercise Days */}
+            {planData.exercisePlan.days.map((day, dayIndex) => (
+              <div key={dayIndex} style={{ 
+                border: '1px solid #ddd', 
+                borderRadius: '8px', 
+                padding: '15px', 
+                marginBottom: '15px' 
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    {editingDayName === dayIndex ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ fontSize: '16px', fontWeight: 'bold' }}>{day.dayName} -</span>
+                        <input
+                          type="text"
+                          value={day.focus}
+                      onChange={(e) => {
+                      const updatedDays = [...planData.exercisePlan.days];
+                            updatedDays[dayIndex].focus = e.target.value;
+                        setPlanData(prev => ({
+                          ...prev,
+                        exercisePlan: { ...prev.exercisePlan, days: updatedDays }
+                      }));
+                          }}
+                          onBlur={() => setEditingDayName(null)}
+                          onKeyPress={(e) => {
+                            if (e.key === 'Enter') {
+                              setEditingDayName(null);
+                            }
+                          }}
+                          style={{
+                            padding: '4px 8px',
+                            border: '1px solid #007bff',
+                            borderRadius: '4px',
+                            fontSize: '16px',
+                            fontWeight: 'bold',
+                            width: '120px'
+                          }}
+                          autoFocus
+                        />
+                      </div>
+                    ) : (
+                      <h4 style={{ margin: 0 }}>{day.dayName} - {day.focus}</h4>
+                    )}
+                    <button
+                      onClick={() => setEditingDayName(dayIndex)}
+                      style={{
+                        padding: '2px 6px',
+                        backgroundColor: '#6c757d',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '3px',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                      }}
+                    >
+                      Edit Focus
+                    </button>
+                  </div>
+                </div>
+                
+                {/* Exercise Search and Filter for this day */}
+                <div style={{ marginBottom: '15px', display: 'flex', gap: '10px', alignItems: 'end', flexWrap: 'wrap' }}>
+                  <div style={{ flex: '2', minWidth: '250px', position: 'relative' }}>
+                    <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', fontSize: '14px' }}>Search Exercises:</label>
+                    <input
+                      type="text"
+                      value={daySearchTerms[dayIndex] || ''}
+                      onChange={(e) => updateDaySearchTerm(dayIndex, e.target.value)}
+                      placeholder="Search by exercise name or type..."
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px',
+                        fontSize: '14px'
+                      }}
+                    />
+                    {dayShowDropdowns[dayIndex] && (
+                      <div style={{
+                        position: 'absolute',
+                        top: '100%',
+                        left: 0,
+                        right: 0,
+                        backgroundColor: 'white',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px',
+                        maxHeight: '200px',
+                        overflowY: 'auto',
+                        zIndex: 1001,
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                      }}>
+                        {getFilteredExercises(dayIndex).slice(0, 8).map(exercise => (
+                          <div
+                            key={exercise.id}
+                            onClick={() => selectExerciseFromDaySearch(dayIndex, exercise)}
+                            style={{
+                              padding: '8px 12px',
+                              cursor: 'pointer',
+                              borderBottom: '1px solid #f0f0f0',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center'
+                            }}
+                            onMouseEnter={(e) => e.target.style.backgroundColor = '#f8f9fa'}
+                            onMouseLeave={(e) => e.target.style.backgroundColor = 'white'}
+                          >
+                            <span style={{ fontWeight: 'bold' }}>{exercise.name}</span>
+                            <span style={{ 
+                              fontSize: '12px', 
+                              backgroundColor: '#17a2b8', 
+                              color: 'white', 
+                              padding: '2px 6px', 
+                              borderRadius: '10px' 
+                            }}>
+                              {exercise.type}
+                            </span>
+                          </div>
+                        ))}
+                        {getFilteredExercises(dayIndex).length === 0 && (
+                          <div style={{ padding: '8px 12px', color: '#6c757d', fontStyle: 'italic' }}>
+                            No exercises found
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', fontSize: '14px' }}>Filter:</label>
+                    <select
+                      value={daySelectedCategories[dayIndex] || 'all'}
+                      onChange={(e) => updateDayCategory(dayIndex, e.target.value)}
+                      style={{
+                        padding: '8px 12px',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px',
+                        fontSize: '14px',
+                        minWidth: '120px'
+                      }}
+                    >
+                      {exerciseCategories.map(category => (
+                        <option key={category.value} value={category.value}>
+                          {category.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+              </div>
+                
+                {/* Selected Exercises with Attributes */}
+                {day.exercises.map((exercise, exerciseIndex) => (
+                  <div key={exerciseIndex} style={{
+                    border: '1px solid #e9ecef',
+                    borderRadius: '6px',
+                    padding: '12px',
+                    marginBottom: '10px',
+                    backgroundColor: '#f8f9fa'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                      <h5 style={{ margin: 0 }}>{exercise.name}</h5>
+                      <button
+                        onClick={() => removeExerciseFromDay(dayIndex, exerciseIndex)}
+                        style={{
+                          padding: '4px 8px',
+                          backgroundColor: '#dc3545',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '3px',
+                          cursor: 'pointer',
+                          fontSize: '12px'
+                        }}
+                      >
+                        Remove
+                      </button>
+          </div>
+                    
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px' }}>
+                      {/* Show Sets and Reps for strength/powerlifting/bodyweight exercises */}
+                      {(exercise.type === 'strength' || exercise.type === 'powerlifting' || exercise.type === 'bodyweight') && (
+                        <>
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 'bold' }}>Sets:</label>
+                            <input
+                              type="number"
+                              value={exercise.sets}
+                              onChange={(e) => updateExerciseAttributes(dayIndex, exerciseIndex, 'sets', parseInt(e.target.value) || 0)}
+                              min="0"
+                              style={{
+                                width: '100%',
+                                padding: '6px',
+                                border: '1px solid #ddd',
+                                borderRadius: '3px',
+                                fontSize: '12px'
+                              }}
+                            />
+                          </div>
+                          
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 'bold' }}>Reps:</label>
+                            <input
+                              type="number"
+                              value={exercise.reps}
+                              onChange={(e) => updateExerciseAttributes(dayIndex, exerciseIndex, 'reps', parseInt(e.target.value) || 0)}
+                              min="0"
+                              style={{
+                                width: '100%',
+                                padding: '6px',
+                                border: '1px solid #ddd',
+                                borderRadius: '3px',
+                                fontSize: '12px'
+                              }}
+                            />
+                          </div>
+                        </>
+                      )}
+                      
+                      {/* Show Duration for cardio/flexibility exercises */}
+                      {(exercise.type === 'cardio' || exercise.type === 'flexibility' || exercise.type === 'bodyweight') && (
+          <div>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold' }}>
+                            {exercise.type === 'cardio' ? 'Duration (min):' : 'Duration (sec):'}
+                          </label>
+                          <input
+                            type="number"
+                            value={exercise.type === 'cardio' ? Math.round(exercise.duration / 60) : exercise.duration}
+                            onChange={(e) => {
+                              const value = exercise.type === 'cardio' 
+                                ? (parseInt(e.target.value) || 0) * 60 
+                                : parseInt(e.target.value) || 0;
+                              updateExerciseAttributes(dayIndex, exerciseIndex, 'duration', value);
+                            }}
+                            min="0"
+                            style={{
+                              width: '100%',
+                              padding: '6px',
+                              border: '1px solid #ddd',
+                              borderRadius: '3px',
+                              fontSize: '12px'
+                            }}
+                          />
+            </div>
+                      )}
+                      
+                      {/* Show Rest for all exercise types */}
+                      <div>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold' }}>Rest (sec):</label>
+                        <input
+                          type="number"
+                          value={exercise.rest}
+                          onChange={(e) => updateExerciseAttributes(dayIndex, exerciseIndex, 'rest', parseInt(e.target.value) || 0)}
+                          min="0"
+                          style={{
+                            width: '100%',
+                            padding: '6px',
+                border: '1px solid #ddd', 
+                            borderRadius: '3px',
+                            fontSize: '12px'
+                          }}
+                        />
+                </div>
+            </div>
+            
+                    {/* Progression Toggle */}
+                    <div style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer', fontSize: '12px' }}>
+                        <input
+                          type="checkbox"
+                          checked={exercise.progressionEnabled}
+                          onChange={() => toggleExerciseProgression(dayIndex, exerciseIndex)}
+                          style={{ transform: 'scale(1.1)' }}
+                        />
+                        <span style={{ fontWeight: 'bold', color: exercise.progressionEnabled ? '#28a745' : '#6c757d' }}>
+                          Enable Progression
+                        </span>
+                      </label>
+                      {exercise.progressionEnabled && (
+                        <span style={{ 
+                          fontSize: '11px', 
+                          color: '#28a745', 
+                          backgroundColor: '#d4edda', 
+                          padding: '2px 6px', 
+                          borderRadius: '3px' 
+                        }}>
+                          {(() => {
+                            const progression = exercise.progressionSettings || planData.progressiveSettings.weeklyIncrements;
+                            const week1Sets = exercise.sets;
+                            const week1Reps = exercise.reps;
+                            const week1Duration = exercise.duration;
+                            const finalWeekSets = exercise.sets + (progression.setsIncrement * (progressiveWeeks - 1));
+                            const finalWeekReps = exercise.reps + (progression.repsIncrement * (progressiveWeeks - 1));
+                            const finalWeekDuration = exercise.duration + (progression.durationIncrement * (progressiveWeeks - 1));
+                            
+                            if (exercise.type === 'cardio') {
+                              return `Week 1: ${Math.round(week1Duration / 60)}min | Week ${progressiveWeeks}: ${Math.round(finalWeekDuration / 60)}min`;
+                            } else if (exercise.type === 'flexibility') {
+                              return `Week 1: ${week1Duration}s | Week ${progressiveWeeks}: ${finalWeekDuration}s`;
+                            } else {
+                              return `Week 1: ${week1Sets}s × ${week1Reps}r | Week ${progressiveWeeks}: ${finalWeekSets}s × ${finalWeekReps}r`;
+                            }
+                          })()}
+                        </span>
+                      )}
+                    </div>
+                    
+                    {/* Expandable Progression Settings */}
+                    {exercise.progressionEnabled && (
+                      <div style={{ marginTop: '10px' }}>
+                        <button
+                          onClick={() => {
+                            const key = `${dayIndex}-${exerciseIndex}`;
+                            setExpandedProgression(prev => ({
+                              ...prev,
+                              [key]: !prev[key]
+                            }));
+                          }}
+                          style={{
+                            padding: '4px 8px',
+                            backgroundColor: '#6c757d',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '3px',
+                            cursor: 'pointer',
+                            fontSize: '11px'
+                          }}
+                        >
+                          {expandedProgression[`${dayIndex}-${exerciseIndex}`] ? 'Hide' : 'Edit'} Progression Settings
+                        </button>
+                        
+                        {expandedProgression[`${dayIndex}-${exerciseIndex}`] && (
+                          <div style={{ 
+                            marginTop: '10px', 
+                            padding: '10px', 
+                            backgroundColor: '#f8f9fa', 
+                            borderRadius: '4px',
+                            border: '1px solid #dee2e6'
+                          }}>
+                            <h6 style={{ marginBottom: '8px', fontSize: '12px', fontWeight: 'bold' }}>
+                              Weekly Progression for {exercise.name}
+                            </h6>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '8px' }}>
+                              {/* Show Sets increment for strength/powerlifting/bodyweight */}
+                              {(exercise.type === 'strength' || exercise.type === 'powerlifting' || exercise.type === 'bodyweight') && (
+                                <div>
+                                  <label style={{ fontSize: '10px', fontWeight: 'bold' }}>Sets per week:</label>
+                                  <input
+                                    type="number"
+                                    value={exercise.progressionSettings?.setsIncrement || 0}
+                                    onChange={(e) => updateExerciseProgression(dayIndex, exerciseIndex, 'setsIncrement', parseInt(e.target.value) || 0)}
+                                    style={{
+                                      width: '100%',
+                                      padding: '4px',
+                                      border: '1px solid #ddd',
+                                      borderRadius: '3px',
+                                      fontSize: '10px'
+                                    }}
+                                  />
+                                </div>
+                              )}
+                              
+                              {/* Show Reps increment for strength/powerlifting/bodyweight */}
+                              {(exercise.type === 'strength' || exercise.type === 'powerlifting' || exercise.type === 'bodyweight') && (
+                                <div>
+                                  <label style={{ fontSize: '10px', fontWeight: 'bold' }}>Reps per week:</label>
+                                  <input
+                                    type="number"
+                                    value={exercise.progressionSettings?.repsIncrement || 0}
+                                    onChange={(e) => updateExerciseProgression(dayIndex, exerciseIndex, 'repsIncrement', parseInt(e.target.value) || 0)}
+                                    style={{
+                                      width: '100%',
+                                      padding: '4px',
+                                      border: '1px solid #ddd',
+                                      borderRadius: '3px',
+                                      fontSize: '10px'
+                                    }}
+                                  />
+                                </div>
+                              )}
+                              
+                              {/* Show Duration increment for cardio/flexibility/bodyweight */}
+                              {(exercise.type === 'cardio' || exercise.type === 'flexibility' || exercise.type === 'bodyweight') && (
+                                <div>
+                                  <label style={{ fontSize: '10px', fontWeight: 'bold' }}>
+                                    {exercise.type === 'cardio' ? 'Duration (min) per week:' : 'Duration (sec) per week:'}
+                                  </label>
+                                  <input
+                                    type="number"
+                                    value={exercise.type === 'cardio' 
+                                      ? Math.round((exercise.progressionSettings?.durationIncrement || 0) / 60)
+                                      : exercise.progressionSettings?.durationIncrement || 0
+                                    }
+                                    onChange={(e) => {
+                                      const value = exercise.type === 'cardio' 
+                                        ? (parseInt(e.target.value) || 0) * 60 
+                                        : parseInt(e.target.value) || 0;
+                                      updateExerciseProgression(dayIndex, exerciseIndex, 'durationIncrement', value);
+                                    }}
+                                    style={{
+                                      width: '100%',
+                                      padding: '4px',
+                                      border: '1px solid #ddd',
+                                      borderRadius: '3px',
+                                      fontSize: '10px'
+                                    }}
+                                  />
+                                </div>
+                              )}
+                              
+                              {/* Show Rest increment for all exercise types */}
+                              <div>
+                                <label style={{ fontSize: '10px', fontWeight: 'bold' }}>Rest (sec) per week:</label>
+                                <input
+                                  type="number"
+                                  value={exercise.progressionSettings?.restIncrement || 0}
+                                  onChange={(e) => updateExerciseProgression(dayIndex, exerciseIndex, 'restIncrement', parseInt(e.target.value) || 0)}
+                                  style={{
+                                    width: '100%',
+                                    padding: '4px',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '3px',
+                                    fontSize: '10px'
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                
+                {/* Exercise Count */}
+                <div style={{ 
+                  marginTop: '10px', 
+                  padding: '8px 12px', 
+                  backgroundColor: '#e3f2fd', 
+                  borderRadius: '4px',
+                  fontSize: '14px',
+                  color: '#1976d2'
+                }}>
+                  <strong>{day.exercises.length}</strong> exercise{day.exercises.length !== 1 ? 's' : ''} added to {day.dayName}
+            </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Plan Preview & Validation */}
+        {currentStep === 3 && (
+          <div style={{ 
+            backgroundColor: '#fff3cd', 
+            padding: '20px', 
+            borderRadius: '8px',
+            border: '1px solid #ffeaa7',
+            marginBottom: '30px'
+          }}>
+            <h4 style={{ marginBottom: '15px', color: '#856404' }}>📋 Plan Preview & Validation</h4>
+            
+            {/* Validation Status */}
+            <div style={{ marginBottom: '20px' }}>
+              <h5 style={{ marginBottom: '10px' }}>✅ Validation Status:</h5>
+              <div style={{ fontSize: '14px' }}>
+                {selectedExerciseTemplate ? (
+                  <p style={{ margin: '0 0 5px 0', color: '#28a745' }}>
+                    ✅ Exercise template selected: {selectedExerciseTemplate.name}
+                  </p>
+                ) : (
+                  <p style={{ margin: '0 0 5px 0', color: '#dc3545' }}>
+                    ❌ No exercise template selected
+                  </p>
+                )}
+                
+                {selectedMealTemplate ? (
+                  <p style={{ margin: '0 0 5px 0', color: '#28a745' }}>
+                    ✅ Meal template selected: {selectedMealTemplate.name}
+                  </p>
+                ) : (
+                  <p style={{ margin: '0 0 5px 0', color: '#dc3545' }}>
+                    ❌ No meal template selected
+                  </p>
+                )}
+                
+                {planData.exercisePlan && planData.exercisePlan.days && Array.isArray(planData.exercisePlan.days) && planData.exercisePlan.days.length > 0 ? (
+                  <p style={{ margin: '0 0 5px 0', color: '#28a745' }}>
+                    ✅ Exercise plan created: {planData.exercisePlan.days.length} days
+                  </p>
+                ) : (
+                  <p style={{ margin: '0 0 5px 0', color: '#dc3545' }}>
+                    ❌ No exercise plan created
+                  </p>
+                )}
+                
+                {planData.mealPlan && planData.mealPlan.meals && Array.isArray(planData.mealPlan.meals) && planData.mealPlan.meals.length > 0 ? (
+                  <p style={{ margin: '0 0 5px 0', color: '#28a745' }}>
+                    ✅ Meal plan created: {planData.mealPlan.meals.length} meals
+                  </p>
+                ) : (
+                  <p style={{ margin: '0 0 5px 0', color: '#dc3545' }}>
+                    ❌ No meal plan created
+                  </p>
+                )}
+              </div>
+            </div>
+            
+            {/* Quick Summary */}
+            <div style={{ 
+              backgroundColor: 'white', 
+              padding: '15px', 
+              borderRadius: '6px',
+              marginBottom: '15px'
+            }}>
+              <h6 style={{ margin: '0 0 10px 0' }}>📊 Plan Summary:</h6>
+              <div style={{ fontSize: '13px', color: '#666' }}>
+                <p style={{ margin: '0 0 5px 0' }}>
+                  <strong>Duration:</strong> {selectedDuration} weeks
+                </p>
+                <p style={{ margin: '0 0 5px 0' }}>
+                  <strong>Training Days:</strong> {selectedExerciseDays || getRecommendedExerciseDays()} days/week
+                </p>
+                <p style={{ margin: '0 0 5px 0' }}>
+                  <strong>Meals per Day:</strong> {selectedMealTemplate ? (selectedMealTemplate.mealsPerDay || 3) : 'Not set'}
+                </p>
+                <p style={{ margin: '0' }}>
+                  <strong>Goal:</strong> {user?.fitnessGoal}
+                </p>
+              </div>
+            </div>
+            
+            {/* Action Buttons */}
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+              <button
+                onClick={() => {
+                  // Validate and proceed to next step
+                  if (selectedExerciseTemplate && selectedMealTemplate) {
+                    handleNext();
+                  } else {
+                    alert('Please select both exercise and meal templates before proceeding.');
+                  }
+                }}
+                style={{
+                  padding: '12px 24px',
+                  backgroundColor: '#28a745',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  fontWeight: 'bold'
+                }}
+              >
+                ✅ Proceed to Review & Assign
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Review & Assign */}
+        {currentStep === 4 && (
+          <div>
+            <h3>Step 4: Review & Assign</h3>
+            <p>Review the complete plan and assign it to the user.</p>
+            
+            {/* Plan Summary */}
+            <div style={{ 
+              backgroundColor: '#e8f5e8', 
+              padding: '20px', 
+              borderRadius: '8px',
+              marginBottom: '20px',
+              border: '2px solid #28a745'
+            }}>
+              <h4>📋 Plan Summary</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '20px' }}>
+                <div>
+                  <h5 style={{ margin: '0 0 10px 0', color: '#155724' }}>User Information</h5>
+                  <p><strong>Name:</strong> {user?.name}</p>
+                  <p><strong>Goal:</strong> {user?.fitnessGoal}</p>
+                  <p><strong>Duration:</strong> {selectedDuration} weeks</p>
+                  <p><strong>Workout Frequency:</strong> {user?.smartScheduleWorkoutsPerWeek} days/week</p>
+            </div>
+            
+                <div>
+                  <h5 style={{ margin: '0 0 10px 0', color: '#155724' }}>Templates Applied</h5>
+                  <p><strong>Exercise:</strong> {selectedExerciseTemplate?.name || 'Custom Plan'}</p>
+                  <p><strong>Meal:</strong> {selectedMealTemplate?.name || 'Custom Plan'}</p>
+                  <p><strong>Progression:</strong> {planData.progressiveSettings.progressionType}</p>
+                </div>
+                
+                <div>
+                  <h5 style={{ margin: '0 0 10px 0', color: '#155724' }}>Plan Details</h5>
+                  <p><strong>Exercise Days:</strong> {planData.exercisePlan.days.length} days</p>
+                  <p><strong>Meals per Day:</strong> {mealsPerDay}</p>
+                  <p><strong>Total Exercises:</strong> {planData.exercisePlan.days.reduce((total, day) => total + day.exercises.length, 0)}</p>
+                </div>
+              </div>
+            </div>
+            
+            {/* Action Buttons */}
+            <div style={{ 
+              display: 'flex', 
+              gap: '15px', 
+              justifyContent: 'center',
+              marginTop: '30px'
+            }}>
+            <button
+                onClick={handleSavePlan}
+              style={{
+                  padding: '15px 30px',
+                  backgroundColor: '#28a745',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  fontWeight: 'bold'
+                }}
+              >
+                ✅ Assign Plan to User
+              </button>
+              
+              <button
+                onClick={() => setCurrentStep(3)}
+                style={{
+                  padding: '15px 30px',
+                backgroundColor: '#6c757d',
+                color: 'white',
+                border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '16px'
+              }}
+            >
+                ← Back to Planning
+            </button>
+                </div>
+            
+            {/* Progression Preview */}
+            <div style={{ 
+              backgroundColor: '#fff3cd', 
+              padding: '20px', 
+              borderRadius: '8px',
+              marginTop: '20px',
+              border: '1px solid #ffeaa7'
+            }}>
+              <h4>📈 Progression Preview</h4>
+              <p><strong>Duration:</strong> {selectedDuration} weeks</p>
+              <p><strong>Exercise Progression:</strong> Every {planData.progressiveSettings.weeklyIncrements.reps > 0 ? 'week' : '2 weeks'}</p>
+              <p><strong>Meal Progression:</strong> Weekly calorie adjustments based on goal</p>
+              <p><strong>Start Date:</strong> {new Date().toLocaleDateString()}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Navigation Buttons */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '30px' }}>
+            <button
+              onClick={handlePrevious}
+            disabled={currentStep === 1}
+              style={{
+                padding: '10px 20px',
+              backgroundColor: currentStep === 1 ? '#6c757d' : '#007bff',
+                color: 'white',
+                border: 'none',
+              borderRadius: '5px',
+              cursor: currentStep === 1 ? 'not-allowed' : 'pointer'
+              }}
+            >
+              Previous
+            </button>
+          
+            <button
+              onClick={handleNext}
+              style={{
+                padding: '10px 20px',
+                backgroundColor: '#28a745',
+                color: 'white',
+                border: 'none',
+              borderRadius: '5px',
+                cursor: 'pointer'
+              }}
+            >
+            {currentStep === 4 ? 'Assign Plan' : 'Next'}
+            </button>
+        </div>
+
+        {/* Exercise Plan Preview Modal */}
+        {showExercisePreview && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 2000
+          }}>
+            <div style={{
+              backgroundColor: 'white',
+              padding: '30px',
+              borderRadius: '10px',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              overflow: 'auto',
+              width: '1000px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h3>💪 Exercise Plan Preview</h3>
+            <button
+                  onClick={() => setShowExercisePreview(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '24px',
+                    cursor: 'pointer',
+                    color: '#666'
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              
+              <div style={{ marginBottom: '20px' }}>
+                <h4 style={{ color: '#007bff', marginBottom: '10px' }}>
+                  {selectedExerciseTemplate?.name} - {selectedExerciseDays || getRecommendedExerciseDays()} Days/Week
+                </h4>
+                <p style={{ color: '#666', margin: '0' }}>
+                  Duration: {selectedDuration} weeks | Goal: {user?.fitnessGoal}
+                </p>
+              </div>
+              
+              {planData.exercisePlan.days.map((day, dayIndex) => (
+                <div key={dayIndex} style={{ 
+                  backgroundColor: '#f8f9fa', 
+                  padding: '15px', 
+                  borderRadius: '8px',
+                  marginBottom: '15px',
+                  border: '1px solid #dee2e6'
+                }}>
+                  <h5 style={{ margin: '0 0 10px 0', color: '#495057' }}>
+                    {day.dayName || `Day ${day.day}`} {day.focus && `(${day.focus})`}
+                  </h5>
+                  
+                  {day.exercises.map((exercise, exerciseIndex) => (
+                    <div key={exerciseIndex} style={{
+                      backgroundColor: 'white',
+                      padding: '10px',
+                      borderRadius: '6px',
+                      marginBottom: '8px',
+                      border: '1px solid #e9ecef'
+                    }}>
+                      <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>
+                        {exercise.name}
+                      </div>
+                      <div style={{ fontSize: '14px', color: '#666' }}>
+                        {exercise.sets && exercise.reps && `${exercise.sets} sets × ${exercise.reps} reps`}
+                        {exercise.duration && ` | ${Math.round(exercise.duration / 60)} min`}
+                        {exercise.rest && ` | Rest: ${exercise.rest}s`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+              
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: '20px' }}>
+                <button
+                  onClick={() => setShowExercisePreview(false)}
+              style={{
+                padding: '10px 20px',
+                    backgroundColor: '#6c757d',
+                color: 'white',
+                border: 'none',
+                    borderRadius: '6px',
+                cursor: 'pointer'
+              }}
+            >
+                  Close Preview
+            </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Meal Plan Preview Modal */}
+        {showMealPreview && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 2000
+          }}>
+            <div style={{
+              backgroundColor: 'white',
+              padding: '30px',
+              borderRadius: '10px',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              overflow: 'auto',
+              width: '1000px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h3>🍽️ Meal Plan Preview</h3>
+                <button
+                  onClick={() => setShowMealPreview(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '24px',
+                    cursor: 'pointer',
+                    color: '#666'
+                  }}
+                >
+                  ×
+                </button>
+        </div>
+              
+              <div style={{ marginBottom: '20px' }}>
+                <h4 style={{ color: '#28a745', marginBottom: '10px' }}>
+                  {selectedMealTemplate?.name} - {selectedMealTemplate?.mealsPerDay || 3} Meals/Day
+                </h4>
+                <p style={{ color: '#666', margin: '0' }}>
+                  Duration: {selectedDuration} weeks | Goal: {user?.fitnessGoal}
+                </p>
+              </div>
+              
+              {planData.mealPlan.meals && planData.mealPlan.meals.map((meal, mealIndex) => (
+                <div key={mealIndex} style={{ 
+                  backgroundColor: '#f8f9fa', 
+                  padding: '15px', 
+                  borderRadius: '8px',
+                  marginBottom: '15px',
+                  border: '1px solid #dee2e6'
+                }}>
+                  <h5 style={{ margin: '0 0 10px 0', color: '#495057' }}>
+                    {meal.mealType}
+                  </h5>
+                  
+                  {meal.foods && meal.foods.map((food, foodIndex) => (
+                    <div key={foodIndex} style={{
+                      backgroundColor: 'white',
+                      padding: '10px',
+                      borderRadius: '6px',
+                      marginBottom: '8px',
+                      border: '1px solid #e9ecef'
+                    }}>
+                      <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>
+                        {food.name}
+                      </div>
+                      <div style={{ fontSize: '14px', color: '#666' }}>
+                        {food.quantity}g | {food.calories} cal | P: {food.protein}g | C: {food.carbs}g | F: {food.fats}g
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+              
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: '20px' }}>
+                <button
+                  onClick={() => setShowMealPreview(false)}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#6c757d',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Close Preview
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+} 
